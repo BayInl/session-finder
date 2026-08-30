@@ -41,9 +41,12 @@ const (
 	EvidenceCommit         = "commit"
 )
 
+const minEvidenceQuoteRunes = 8
+
 var (
 	ErrInvalidDecision      = errors.New("invalid decision")
 	ErrEvidenceNotFound     = errors.New("evidence quote does not match session message")
+	ErrEvidenceTooShort     = errors.New("evidence quote is shorter than 8 Unicode characters")
 	ErrExplicitEvidenceRole = errors.New("explicit evidence must quote a user message")
 	ErrConfirmationRequired = errors.New("confirmation is required before writing a decision")
 	ErrInvalidReviewAction  = errors.New("invalid decision review action")
@@ -219,8 +222,8 @@ func (d Decision) Validate() error {
 		if !validEvidenceKind(strings.ToLower(strings.TrimSpace(evidence.Kind))) {
 			return fmt.Errorf("%w: evidence %d has invalid kind %q", ErrInvalidDecision, i, evidence.Kind)
 		}
-		if evidence.Quote == "" {
-			return fmt.Errorf("%w: evidence %d has empty quote", ErrInvalidDecision, i)
+		if err := validateEvidenceQuote(evidence.Quote); err != nil {
+			return fmt.Errorf("%w: evidence %d: %w", ErrInvalidDecision, i, err)
 		}
 		if evidence.MessageIndex < 0 {
 			return fmt.Errorf("%w: evidence %d has invalid message index", ErrInvalidDecision, i)
@@ -237,8 +240,8 @@ func (d Decision) Validate() error {
 // prevents assistant text from being mistaken for user confirmation.
 func ValidateEvidence(messages []record.MessageRecord, evidence []Evidence) error {
 	for i, item := range evidence {
-		if item.Quote == "" {
-			return fmt.Errorf("%w: evidence %d is empty", ErrEvidenceNotFound, i)
+		if err := validateEvidenceQuote(item.Quote); err != nil {
+			return fmt.Errorf("%w: evidence %d: %v", err, i, err)
 		}
 		kind := strings.ToLower(strings.TrimSpace(item.Kind))
 		matchedAny, matchedUser := false, false
@@ -345,14 +348,24 @@ func CandidateStatusForDecision(status string) string {
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
+func validateEvidenceQuote(quote string) error {
+	if strings.TrimSpace(quote) == "" {
+		return ErrEvidenceNotFound
+	}
+	if len([]rune(strings.TrimSpace(quote))) < minEvidenceQuoteRunes {
+		return ErrEvidenceTooShort
+	}
+	return nil
+}
+
 // ExactQuoteMatch is a small exported helper used by callers and tests.
 func ExactQuoteMatch(message, quote string) bool {
-	return quote != "" && strings.Contains(message, quote)
+	return validateEvidenceQuote(quote) == nil && strings.Contains(message, quote)
 }
 
 // IsEvidenceError reports whether an error is caused by quote provenance.
 func IsEvidenceError(err error) bool {
-	return errors.Is(err, ErrEvidenceNotFound) || errors.Is(err, ErrExplicitEvidenceRole)
+	return errors.Is(err, ErrEvidenceNotFound) || errors.Is(err, ErrEvidenceTooShort) || errors.Is(err, ErrExplicitEvidenceRole)
 }
 
 // EnsureOutcome applies the MVP safety rule and returns a normalized copy.

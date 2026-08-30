@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/BayInl/session-finder/internal/extract"
+	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
 )
 
@@ -62,6 +63,39 @@ func TestScanAvoidsQuestionOnlyFalsePositive(t *testing.T) {
 	}
 }
 
+func TestScanFiltersUsageNoiseAndMarkdownCode(t *testing.T) {
+	messages := []record.MessageRecord{
+		msg("s1", "assistant", "使用 SQLite 来做本地缓存。"),
+		msg("s1", "assistant", "```go\nuse SQLite\n```"),
+		msg("s1", "assistant", "[Use SQLite](https://example.com)"),
+		msg("s1", "assistant", "Use SQLite because it is local."),
+	}
+	candidates := Scan(messages)
+	if len(candidates) != 1 {
+		t.Fatalf("usage/markdown candidates = %#v", candidates)
+	}
+	if candidates[0].Rationale == "" {
+		t.Fatalf("candidate lost rationale: %#v", candidates[0])
+	}
+	if candidates[0].Confidence < 0.62 {
+		t.Fatalf("candidate below default admission threshold: %#v", candidates[0])
+	}
+}
+
+func TestScanRequiresSemanticRelationForImplementation(t *testing.T) {
+	messages := []record.MessageRecord{
+		msg("s1", "user", "Choose SQLite because it is local."),
+		msg("s1", "assistant", "Implemented an unrelated dashboard component."),
+	}
+	candidates := Scan(messages)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %#v, want one", candidates)
+	}
+	if candidates[0].Outcome != OutcomeUnknown {
+		t.Fatalf("unrelated implementation changed outcome: %#v", candidates[0])
+	}
+}
+
 func TestValidateEvidenceRequiresExactQuoteAndUserExplicit(t *testing.T) {
 	messages := []record.MessageRecord{msg("s1", "assistant", "Looks good, approved."), msg("s1", "user", "Looks good, approved!")}
 	if err := ValidateEvidence(messages, []Evidence{{Kind: EvidenceTranscript, Quote: "Looks good, approved."}}); err != nil {
@@ -81,6 +115,21 @@ func TestValidateEvidenceRequiresExactQuoteAndUserExplicit(t *testing.T) {
 	}
 	if err := ValidateEvidence(messages, []Evidence{{Kind: EvidenceTranscript, Quote: "Looks good, approved" + "?"}}); !errors.Is(err, ErrEvidenceNotFound) {
 		t.Fatalf("missing quote error = %v", err)
+	}
+	if err := ValidateEvidence(messages, []Evidence{{Kind: EvidenceTranscript, Quote: "short"}}); !errors.Is(err, ErrEvidenceTooShort) {
+		t.Fatalf("short quote error = %v", err)
+	}
+	if err := ValidateEvidence(messages, []Evidence{{Kind: EvidenceTranscript, Quote: "1234567"}}); !errors.Is(err, ErrEvidenceTooShort) {
+		t.Fatalf("seven-rune quote error = %v", err)
+	}
+	if err := ValidateEvidence(messages, []Evidence{{Kind: EvidenceTranscript, Quote: "approved"}}); err != nil {
+		t.Fatalf("eight-rune quote should match: %v", err)
+	}
+	if ExactQuoteMatch("12345678 in a message", "1234567") {
+		t.Fatal("short quote should not match")
+	}
+	if !ExactQuoteMatch("12345678 in a message", "12345678") {
+		t.Fatal("eight-rune quote should match")
 	}
 }
 
@@ -138,6 +187,77 @@ func TestStoreConfirmationReviewAndAppendOnlyEvents(t *testing.T) {
 	listed, err := store.List(context.Background(), ListOptions{Status: StatusAccepted})
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("listed = %#v err=%v", listed, err)
+	}
+}
+
+func TestStoreReviewEditHydratesPersistedSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	messages := []record.MessageRecord{
+		msg("s1", "user", "Choose SQLite over Postgres because it keeps the MVP local."),
+	}
+	candidate := Scan(messages)[0]
+	created, err := store.Confirm(context.Background(), candidate, messages, "user", "confirmed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add the source/session rows to the same database, matching the index
+	// schema used by the CLI. Review must reload them when Messages is omitted.
+	db, err := index.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.InitializeSchema(db); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(tool, session_id, cwd, source_path) VALUES ('codex', 's1', '/tmp/project', '/tmp/session.jsonl')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO messages(session_pk, role, ts, text) VALUES (last_insert_rowid(), 'user', 1, 'Choose SQLite over Postgres because it keeps the MVP local.')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	edited := created
+	edited.Context = "Choose SQLite for the local MVP"
+	edited.Evidence = []Evidence{{Kind: EvidenceTranscript, Quote: "Choose SQLite over Postgres because it keeps the MVP local."}}
+	edited.Provenance = created.Provenance
+	replacement, err := store.Review(context.Background(), ReviewInput{ID: created.ID, Action: ReviewEdit, Decision: &edited, Confirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Context != edited.Context || replacement.Supersedes != created.ID {
+		t.Fatalf("replacement = %#v", replacement)
+	}
+}
+
+func TestConfidenceBandsReflectEvidence(t *testing.T) {
+	messages := []record.MessageRecord{
+		msg("s1", "user", "使用 SQLite 方案。"),
+		msg("s2", "user", "Choose SQLite over Postgres because it keeps the MVP local."),
+		msg("s2", "user", "Looks good, approved."),
+	}
+	candidates := Extract(messages, ExtractOptions{MinConfidence: 0.4})
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+	if candidates[0].Confidence == candidates[1].Confidence {
+		t.Fatalf("confidence lacks separation: %#v", candidates)
+	}
+	if candidates[1].Confidence <= candidates[0].Confidence {
+		t.Fatalf("stronger evidence did not score higher: %#v", candidates)
+	}
+	defaultCandidates := Extract(messages, ExtractOptions{})
+	if len(defaultCandidates) != 1 || defaultCandidates[0].Provenance.SessionID != "s2" {
+		t.Fatalf("default admission threshold did not filter the weaker candidate: %#v", defaultCandidates)
 	}
 }
 

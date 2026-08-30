@@ -3,15 +3,19 @@ package decisions
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/BayInl/session-finder/internal/extract"
 	"github.com/BayInl/session-finder/internal/record"
+
+	_ "modernc.org/sqlite"
 )
 
 // Store persists decisions through internal/extract's candidate state machine.
@@ -352,7 +356,11 @@ func (s *Store) Review(ctx context.Context, input ReviewInput) (Decision, error)
 		if edited.Supersedes == "" {
 			edited.Supersedes = old.ID
 		}
-		created, err := s.Create(ctx, CreateInput{Decision: edited, Messages: input.Messages, Confirmed: true, Actor: actor, Reason: "edit: " + reason})
+		messages, err := s.reviewMessages(ctx, old, input.Messages)
+		if err != nil {
+			return Decision{}, err
+		}
+		created, err := s.Create(ctx, CreateInput{Decision: edited, Messages: messages, Confirmed: true, Actor: actor, Reason: "edit: " + reason})
 		if err != nil {
 			return Decision{}, err
 		}
@@ -363,6 +371,85 @@ func (s *Store) Review(ctx context.Context, input ReviewInput) (Decision, error)
 	default:
 		return Decision{}, fmt.Errorf("%w: %q", ErrInvalidReviewAction, input.Action)
 	}
+}
+
+func (s *Store) reviewMessages(ctx context.Context, old Decision, provided []record.MessageRecord) ([]record.MessageRecord, error) {
+	if len(provided) > 0 {
+		return provided, nil
+	}
+	messages, err := loadReviewMessages(ctx, s.path, old.Provenance)
+	if err == nil && len(messages) > 0 {
+		return messages, nil
+	}
+	// A store created over a database that has no source-session tables (for
+	// example, an isolated candidate database in an API test) can still prove
+	// the old evidence. Keep this fallback limited to persisted, validated
+	// quotes; edited payloads cannot introduce unverified transcript text.
+	fallback := make([]record.MessageRecord, 0, len(old.Evidence))
+	for _, evidence := range old.Evidence {
+		quote := strings.TrimSpace(evidence.Quote)
+		if quote == "" {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(evidence.Role))
+		if role != "user" && role != "assistant" {
+			role = "assistant"
+			if strings.EqualFold(evidence.Kind, EvidenceExplicit) {
+				role = "user"
+			}
+		}
+		fallback = append(fallback, record.MessageRecord{
+			Tool: old.Provenance.Tool, SessionID: old.Provenance.SessionID,
+			SourcePath: old.Provenance.SourcePath, Role: role, Text: evidence.Quote,
+		})
+	}
+	if len(fallback) > 0 {
+		return fallback, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: unable to reload original session messages: %v", ErrEvidenceNotFound, err)
+	}
+	return nil, fmt.Errorf("%w: unable to reload original session messages", ErrEvidenceNotFound)
+}
+
+func loadReviewMessages(ctx context.Context, path string, provenance Provenance) ([]record.MessageRecord, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || path == ":memory:" {
+		return nil, errors.New("session database path is unavailable")
+	}
+	uri := "file:" + strings.ReplaceAll(strings.ReplaceAll(url.PathEscape(path), "%2F", "/"), "%2f", "/") + "?mode=ro"
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	where := "s.session_id = ?"
+	args := []any{provenance.SessionID}
+	if strings.TrimSpace(provenance.SourcePath) != "" {
+		where += " AND s.source_path = ?"
+		args = append(args, provenance.SourcePath)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT s.tool, s.session_id, s.cwd, s.title, s.source_path,
+		m.ts, m.role, m.text FROM sessions AS s JOIN messages AS m ON m.session_pk = s.id WHERE `+where+`
+		ORDER BY COALESCE(m.ts, 0), m.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := make([]record.MessageRecord, 0)
+	for rows.Next() {
+		var tool, sessionID, cwd, title, sourcePath, role, text string
+		var timestamp any
+		if err := rows.Scan(&tool, &sessionID, &cwd, &title, &sourcePath, &timestamp, &role, &text); err != nil {
+			return nil, err
+		}
+		messages = append(messages, record.MessageRecord{
+			Tool: tool, SessionID: sessionID, CWD: cwd, Title: title,
+			Timestamp: timestamp, Role: role, Text: text, SourcePath: sourcePath,
+		})
+	}
+	return messages, rows.Err()
 }
 
 func transitionForReview(ctx context.Context, store *extract.Store, id, target, actor, reason string) error {

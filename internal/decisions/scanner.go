@@ -14,17 +14,28 @@ import (
 )
 
 var (
-	decisionCueRE = regexp.MustCompile(`(?i)\b(?:decide|decision|choose|chose|choice|select|selected|prefer|preferred|recommend|recommendation|should we|we['’]?ll use|use|adopt|go with|pick|trade[- ]off|instead of|because)\b|决定|决策|选择|选用|偏好|推荐|建议|采用|使用|取舍|替代|代替|因为|由于|改用|不要.*改`)
-	confirmRE     = regexp.MustCompile(`(?i)^\s*(?:yes|yep|yeah|correct|right|looks good|sounds good|good|great|perfect|approved|accept(?:ed)?|ship it|proceed|go ahead|do that|that works|works for me|please do|done|thanks|thank you)\b|(?:可以|好的|好吧|正确|对的|没问题|看起来不错|批准|通过|确认|继续|就这样|按这个|采用|发布|搞定|谢谢)`)
-	implementRE   = regexp.MustCompile(`(?i)\b(?:implemented|built|added|created|completed|fixed|shipped|deployed|merged)\b|(?:实现了|已实现|完成了|已经完成|修复了|已修复|已合并|已发布|部署完成)`)
-	negativeRE    = regexp.MustCompile(`(?i)\b(?:not|never|didn['’]?t|doesn['’]?t|isn['’]?t|is not|wasn['’]?t|was not)\s+(?:implemented|built|added|created|completed|fixed|shipped|deployed|merged)\b|(?:未实现|没有实现|尚未完成|未完成|没有修复|尚未修复)`)
-	testRE        = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*(?:pass|passed|ok|success|green)\b)|(?:\btests?\b[^\n]*(?:pass|passed|ok|success|green)\b)|(?:测试(?:全部|都)?通过)|(?:^|\n)\s*(?:ok|PASS)\b`)
-	testFailRE    = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass)\b)|(?:\btests?\b[^\n]*(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass)\b)|(?:测试失败|测试报错|build failed)|(?:^|\n)\s*FAIL\b`)
-	becauseRE     = regexp.MustCompile(`(?is)\b(?:because|since|so that|due to)\s+(.+?)(?:[.!?]|$)|(?:因为|由于|为了)\s*(.+?)(?:[。！？!?]|$)`)
-	insteadRE     = regexp.MustCompile(`(?is)\binstead of\s+(.+?)(?:,|;|\s+(?:use|choose|pick|adopt|go with)\s+)(.+?)(?:[.!?]|$)|(?:不要|不使用)\s*(.+?)(?:，|,|；|;)?\s*(?:改用|换成|使用)\s*(.+?)(?:[。！？!?]|$)`)
-	chooseOverRE  = regexp.MustCompile(`(?is)(?:choose|pick|select|prefer|use|adopt|go with)\s+(.+?)\s+(?:over|rather than|instead of)\s+(.+?)(?:\s+because\b|[.!?]|$)`)
-	useRE         = regexp.MustCompile(`(?is)(?:we['’]?ll use|we will use|let['’]?s use|recommend(?:ation)?|use|adopt|go with|choose|pick|select|采用|改用|使用|选择|建议|推荐)\s+([^.!?\n，。！？]{1,120})`)
-	questionRE    = regexp.MustCompile(`(?i)\b(?:should we|which|what should|how should we)\b|是否|哪个方案|怎么选|如何选择`)
+	strongDecisionCueRE = regexp.MustCompile(`(?i)\b(?:decide|decision|choose|chose|choice|select|selected|prefer|preferred|recommend|recommendation|should we|we['’]?ll use|we will use|let['’]?s use|adopt|go with|pick|trade[- ]off|instead of|rather than)\b|决定|决策|选择|选用|偏好|推荐|建议|采用|取舍|替代|代替|改用|不要.*改|不使用`)
+	usageCueRE          = regexp.MustCompile(`(?i)\buse\b|使用`)
+	semanticUsageRE     = regexp.MustCompile(`(?i)\b(?:because|since|due to|instead of|rather than|over|choose|pick|select|prefer|recommend|adopt|trade[- ]off|option|alternative|approach|proposal)\b|因为|由于|而非|而不是|替代|选择|考虑|方案|取舍|推荐|建议|采用|改用`)
+	confirmRE           = regexp.MustCompile(`(?i)^\s*(?:yes|yep|yeah|correct|right|looks good|sounds good|good|great|perfect|approved|accept(?:ed)?|ship it|proceed|go ahead|do that|that works|works for me|please do|done|thanks|thank you)\b|(?:可以|好的|好吧|正确|对的|没问题|看起来不错|批准|通过|确认|继续|就这样|按这个|采用|发布|搞定|谢谢)`)
+	implementRE         = regexp.MustCompile(`(?i)\b(?:implemented|built|added|created|completed|fixed|shipped|deployed|merged)\b|(?:实现了|已实现|完成了|已经完成|修复了|已修复|已合并|已发布|部署完成)`)
+	negativeRE          = regexp.MustCompile(`(?i)\b(?:not|never|didn['’]?t|doesn['’]?t|isn['’]?t|is not|wasn['’]?t|was not)\s+(?:implemented|built|added|created|completed|fixed|shipped|deployed|merged)\b|(?:未实现|没有实现|尚未完成|未完成|没有修复|尚未修复)`)
+	testRE              = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*(?:pass|passed|ok|success|green)\b)|(?:\btests?\b[^\n]*(?:pass|passed|ok|success|green)\b)|(?:测试(?:全部|都)?通过)|(?:^|\n)\s*(?:ok|PASS)\b`)
+	testFailRE          = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass)\b)|(?:\btests?\b[^\n]*(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass)\b)|(?:测试失败|测试报错|build failed)|(?:^|\n)\s*FAIL\b`)
+	becauseRE           = regexp.MustCompile(`(?is)\b(?:because|since|so that|due to)\s+(.+?)(?:[.!?]|$)|(?:因为|由于|为了)\s*(.+?)(?:[。！？!?]|$)`)
+	insteadRE           = regexp.MustCompile(`(?is)\binstead of\s+(.+?)(?:,|;|\s+(?:use|choose|pick|adopt|go with)\s+)(.+?)(?:[.!?]|$)|(?:不要|不使用)\s*(.+?)(?:，|,|；|;)?\s*(?:改用|换成|使用)\s*(.+?)(?:[。！？!?]|$)`)
+	chooseOverRE        = regexp.MustCompile(`(?is)(?:choose|pick|select|prefer|use|adopt|go with)\s+(.+?)\s+(?:over|rather than|instead of)\s+(.+?)(?:\s+because\b|[.!?]|$)`)
+	useRE               = regexp.MustCompile(`(?is)(?:we['’]?ll use|we will use|let['’]?s use|recommend(?:ation)?|adopt|go with|choose|pick|select|采用|改用|使用|选择|建议|推荐)\s+([^.!?\n，。！？]{1,120})`)
+	questionRE          = regexp.MustCompile(`(?i)\b(?:should we|which|what should|how should we)\b|是否|哪个方案|怎么选|如何选择`)
+	fencedCodeRE        = regexp.MustCompile("(?s)```.*?```")
+	inlineCodeRE        = regexp.MustCompile("`[^`]*`")
+	markdownLinkRE      = regexp.MustCompile(`!?(?:\[[^\]]*\])\([^)]*\)`)
+	markdownMarkerRE    = regexp.MustCompile(`(?m)^\s{0,3}(?:[#>*+\-]|\d+[.)])\s+`)
+	xmlNoiseRE          = regexp.MustCompile(`(?is)<(?:environment_context|system(?:-reminder)?|user_info|developer(?:_context)?|instructions?)\b`)
+	agentsNoiseRE       = regexp.MustCompile(`(?im)(?:^|\n)\s*(?:#\s*)?(?:AGENTS(?:\.md)?|system instructions?|developer instructions?|ignore previous|you are an ai)\b`)
+	pathRE              = regexp.MustCompile(`(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+\.(?:go|py|js|ts|tsx|jsx|rs|java|sql|yaml|yml|json|md|toml|sh)\b`)
+	asciiTokenRE        = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_+-]{2,}`)
+	cjkTokenRE          = regexp.MustCompile(`[\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}]{2,}`)
 )
 
 // ExtractOptions controls deterministic extraction and optional low-confidence
@@ -33,6 +44,7 @@ var (
 type ExtractOptions struct {
 	Refiner       Refiner
 	ConfidenceCut float64
+	MinConfidence float64
 	Extractor     string
 }
 
@@ -57,6 +69,9 @@ func Extract(messages []record.MessageRecord, options ExtractOptions) []Decision
 	if options.ConfidenceCut <= 0 || options.ConfidenceCut >= 1 {
 		options.ConfidenceCut = 0.55
 	}
+	if options.MinConfidence <= 0 || options.MinConfidence >= 1 {
+		options.MinConfidence = 0.62
+	}
 	if strings.TrimSpace(options.Extractor) == "" {
 		options.Extractor = "rules"
 	}
@@ -64,8 +79,9 @@ func Extract(messages []record.MessageRecord, options ExtractOptions) []Decision
 	byKey := map[string]int{}
 	for i, message := range clean {
 		text := strings.TrimSpace(message.Text)
-		isConfirmation := strings.EqualFold(message.Role, "user") && confirmRE.MatchString(text)
-		isImplementation := strings.EqualFold(message.Role, "assistant") && (implementRE.MatchString(text) || testRE.MatchString(text) || testFailRE.MatchString(text))
+		signalText := signalTextForScan(text)
+		isConfirmation := strings.EqualFold(message.Role, "user") && confirmRE.MatchString(signalText)
+		isImplementation := strings.EqualFold(message.Role, "assistant") && (implementRE.MatchString(signalText) || testRE.MatchString(signalText) || testFailRE.MatchString(signalText))
 		if isConfirmation {
 			if attachConfirmation(candidates, message.SessionID, text, i) {
 				continue
@@ -76,10 +92,13 @@ func Extract(messages []record.MessageRecord, options ExtractOptions) []Decision
 				continue
 			}
 		}
-		if !decisionCueRE.MatchString(text) || questionRE.MatchString(text) && !hasDecisionStatement(text) {
+		if !hasDecisionCue(signalText) || questionRE.MatchString(signalText) && !hasDecisionStatement(signalText) {
 			continue
 		}
 		candidate := candidateFromMessage(clean, i, options.Extractor)
+		if candidate.Decision.Confidence < options.MinConfidence {
+			continue
+		}
 		key := candidateKey(candidate.Decision)
 		if previous, ok := byKey[key]; ok {
 			mergeCandidate(&candidates[previous], &candidate)
@@ -112,12 +131,16 @@ func Extract(messages []record.MessageRecord, options ExtractOptions) []Decision
 // low-confidence refinement.
 func ExtractContext(ctx context.Context, messages []record.MessageRecord, options ExtractOptions) ([]DecisionCandidate, error) {
 	clean := cleanMessages(messages)
-	candidates := Extract(clean, ExtractOptions{Extractor: options.Extractor, ConfidenceCut: options.ConfidenceCut})
+	baseOptions := ExtractOptions{Extractor: options.Extractor, ConfidenceCut: options.ConfidenceCut, MinConfidence: 0.4}
+	candidates := Extract(clean, baseOptions)
 	if options.Refiner == nil || len(candidates) == 0 {
-		return candidates, nil
+		return filterCandidates(candidates, options.MinConfidence), nil
 	}
 	if options.ConfidenceCut <= 0 || options.ConfidenceCut >= 1 {
 		options.ConfidenceCut = 0.55
+	}
+	if options.MinConfidence <= 0 || options.MinConfidence >= 1 {
+		options.MinConfidence = 0.62
 	}
 	bundle, err := options.Refiner.Analyze(ctx, clean)
 	if err != nil {
@@ -135,7 +158,20 @@ func ExtractContext(ctx context.Context, messages []record.MessageRecord, option
 			candidates[i].Reasons = appendUnique(candidates[i].Reasons, "llm:suppress")
 		}
 	}
-	return candidates, nil
+	return filterCandidates(candidates, options.MinConfidence), nil
+}
+
+func filterCandidates(candidates []DecisionCandidate, minConfidence float64) []DecisionCandidate {
+	if minConfidence <= 0 || minConfidence >= 1 {
+		minConfidence = 0.62
+	}
+	filtered := make([]DecisionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Decision.Confidence >= minConfidence {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 func cleanMessages(messages []record.MessageRecord) []record.MessageRecord {
@@ -164,7 +200,41 @@ func isNoise(text string) bool {
 			return true
 		}
 	}
-	return false
+	return xmlNoiseRE.MatchString(trimmed) || agentsNoiseRE.MatchString(trimmed) || isAllCapsInstruction(trimmed)
+}
+
+func isAllCapsInstruction(text string) bool {
+	letters, upper := 0, 0
+	for _, r := range text {
+		if unicode.IsLetter(r) {
+			letters++
+			if unicode.IsUpper(r) {
+				upper++
+			}
+		}
+	}
+	if letters < 12 || upper*100/letters < 85 {
+		return false
+	}
+	return strings.ContainsAny(text, ":!\n") || strings.HasPrefix(text, "DO ") || strings.HasPrefix(text, "MUST ")
+}
+
+func signalTextForScan(text string) string {
+	text = fencedCodeRE.ReplaceAllString(text, " ")
+	text = inlineCodeRE.ReplaceAllString(text, " ")
+	text = markdownLinkRE.ReplaceAllString(text, " ")
+	text = markdownMarkerRE.ReplaceAllString(text, " ")
+	text = strings.ReplaceAll(text, "**", " ")
+	text = strings.ReplaceAll(text, "__", " ")
+	text = strings.ReplaceAll(text, "~~", " ")
+	return strings.TrimSpace(text)
+}
+
+func hasDecisionCue(text string) bool {
+	if strongDecisionCueRE.MatchString(text) {
+		return true
+	}
+	return usageCueRE.MatchString(text) && semanticUsageRE.MatchString(text)
 }
 
 func candidateFromMessage(messages []record.MessageRecord, index int, extractor string) DecisionCandidate {
@@ -186,26 +256,38 @@ func candidateFromMessage(messages []record.MessageRecord, index int, extractor 
 		_, chosen = extractOptions(messages[index-1].Text)
 	}
 	rationale := extractRationale(text)
-	confidence := 0.46
+	signalText := signalTextForScan(text)
+	confidence := 0.54
 	reasons := []string{"decision-word"}
-	if len(options) > 0 {
+	if usageCueRE.MatchString(signalText) && !strongDecisionCueRE.MatchString(signalText) && rationale == "" {
+		confidence -= 0.04
+		reasons = []string{"descriptive-usage"}
+	}
+	if len(options) > 1 {
 		confidence += 0.13
 		reasons = append(reasons, "alternatives")
-	}
-	if chosen != "" {
-		confidence += 0.1
+	} else if len(options) == 1 && strongDecisionCueRE.MatchString(signalText) {
+		confidence += 0.04
 		reasons = append(reasons, "chosen-option")
 	}
-	if rationale != "" {
+	if strings.Contains(signalText, "?") || strings.Contains(signalText, "？") {
+		confidence -= 0.08
+		reasons = append(reasons, "open-question")
+	}
+	if chosen != "" {
 		confidence += 0.08
+		reasons = appendUnique(reasons, "chosen-option")
+	}
+	if rationale != "" {
+		confidence += 0.1
 		reasons = append(reasons, "because-rationale")
 	}
-	if strings.Contains(strings.ToLower(text), "instead of") || strings.Contains(text, "改用") {
-		confidence += 0.06
+	if strings.Contains(strings.ToLower(signalText), "instead of") || strings.Contains(strings.ToLower(signalText), "rather than") || strings.Contains(signalText, "改用") || strings.Contains(signalText, "而非") {
+		confidence += 0.09
 		reasons = append(reasons, "instead-of")
 	}
-	if strings.EqualFold(message.Role, "user") && confirmRE.MatchString(text) {
-		confidence += 0.14
+	if strings.EqualFold(message.Role, "user") && confirmRE.MatchString(signalText) {
+		confidence += 0.12
 		reasons = append(reasons, "explicit-confirmation")
 	}
 	confidence = clampDecision(confidence)
@@ -260,6 +342,10 @@ func attachConfirmation(candidates []DecisionCandidate, sessionID, text string, 
 }
 
 func attachImplementation(candidates []DecisionCandidate, sessionID, text string, index int) bool {
+	implementationTokens := decisionTokens(text)
+	if len(implementationTokens) == 0 {
+		return false
+	}
 	for i := len(candidates) - 1; i >= 0; i-- {
 		decision := &candidates[i].Decision
 		if decision.Provenance.SessionID != sessionID {
@@ -267,6 +353,9 @@ func attachImplementation(candidates []DecisionCandidate, sessionID, text string
 		}
 		if index+1-decision.Provenance.MessageEnd > 4 {
 			break
+		}
+		if !sharesDecisionToken(*decision, implementationTokens) {
+			continue
 		}
 		kind := EvidenceImplementation
 		if testRE.MatchString(text) || testFailRE.MatchString(text) {
@@ -282,6 +371,48 @@ func attachImplementation(candidates []DecisionCandidate, sessionID, text string
 			decision.Provenance.MessageEnd = index + 1
 		}
 		return true
+	}
+	return false
+}
+
+func decisionTokens(decisionOrText any) map[string]struct{} {
+	var text string
+	switch value := decisionOrText.(type) {
+	case string:
+		text = value
+	case Decision:
+		text = strings.Join([]string{value.Context, value.Chosen, value.Rationale, strings.Join(value.Options, " ")}, " ")
+	}
+	text = signalTextForScan(text)
+	tokens := make(map[string]struct{})
+	for _, token := range asciiTokenRE.FindAllString(strings.ToLower(text), -1) {
+		if !isGenericToken(token) {
+			tokens[token] = struct{}{}
+		}
+	}
+	for _, token := range cjkTokenRE.FindAllString(text, -1) {
+		tokens[token] = struct{}{}
+	}
+	for _, path := range pathRE.FindAllString(text, -1) {
+		tokens[strings.ToLower(path)] = struct{}{}
+	}
+	return tokens
+}
+
+func isGenericToken(token string) bool {
+	switch token {
+	case "the", "and", "for", "with", "from", "that", "this", "use", "used", "using", "will", "would", "should", "because", "instead", "rather", "than", "implemented", "implementation", "tests", "test", "passed", "pass", "success", "green":
+		return true
+	default:
+		return len(token) < 4
+	}
+}
+
+func sharesDecisionToken(decision Decision, implementationTokens map[string]struct{}) bool {
+	for token := range decisionTokens(decision) {
+		if _, ok := implementationTokens[token]; ok {
+			return true
+		}
 	}
 	return false
 }
@@ -395,7 +526,7 @@ func uniqueChoices(values []string) []string {
 }
 
 func hasDecisionStatement(text string) bool {
-	return strings.ContainsAny(text, ".。!！;；,") || strings.Contains(strings.ToLower(text), "use ") || strings.Contains(text, "采用") || strings.Contains(text, "选择")
+	return strings.ContainsAny(text, ".。!！;；,") || strings.Contains(strings.ToLower(text), "use ") || strings.Contains(text, "采用") || strings.Contains(text, "选择") || semanticUsageRE.MatchString(text)
 }
 
 func candidateKey(decision Decision) string {
