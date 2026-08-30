@@ -1,0 +1,73 @@
+version: 2
+
+project_name: session-finder
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: session-finder
+    main: ./cmd/session-finder
+    binary: session-finder
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: linux
+        goarch: arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    ids:
+      - session-finder
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: BayInl
+    name: session-finder
+  prerelease: auto
+
+brews:
+  - name: session-finder
+    ids:
+      - default
+    repository:
+      owner: BayInl
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/BayInl/session-finder
+    description: Search local AI sessions from multiple tools
+    license: MIT
+    test: |
+      system "#{bin}/session-finder", "--help"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - '^Merge '
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
