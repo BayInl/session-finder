@@ -22,6 +22,8 @@ UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 WORKSPACE_PATH_RE = re.compile(r"(?:Workspace Path|工作区路径):\s*(.+)")
+_CODEX_JSONL_RE = re.compile(rb'"type"\s*:\s*"(?:message|session_meta)"')
+_KIMI_JSONL_RE = re.compile(rb'"type"\s*:\s*"context\.append_message"')
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,38 @@ class SourceSpec:
     tool: str
     path: Path
     auxiliary_paths: tuple[Path, ...] = ()
+
+
+def _iter_jsonl_values(
+    path: Path,
+    candidate_re: re.Pattern[bytes] | None,
+    quick_hints: tuple[bytes, ...] = (),
+) -> Iterator[dict[str, Any]]:
+    """Yield decoded JSON objects from candidate JSONL lines only."""
+
+    try:
+        handle = path.open("rb")
+    except OSError:
+        return
+    with handle:
+        for raw_line in handle:
+            if quick_hints:
+                if len(quick_hints) == 1:
+                    quick_match = quick_hints[0] in raw_line
+                elif len(quick_hints) == 2:
+                    quick_match = quick_hints[0] in raw_line or quick_hints[1] in raw_line
+                else:
+                    quick_match = any(hint in raw_line for hint in quick_hints)
+                if not quick_match:
+                    continue
+            if candidate_re is not None and not candidate_re.search(raw_line):
+                continue
+            try:
+                value = json.loads(raw_line.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                yield value
 
 
 def extract_text(value: Any) -> str:
@@ -289,34 +323,22 @@ def iter_grok_records(
     timestamp = summary.get("created_at") or info.get("created_at")
     session_id = chat_path.parent.name
 
-    try:
-        handle = chat_path.open("r", encoding="utf-8", errors="replace")
-    except OSError:
-        return
-    with handle:
-        for line in handle:
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(value, dict) or value.get("type") not in {
-                "user",
-                "assistant",
-            }:
-                continue
-            text = extract_text(value.get("content"))
-            record = _record(
-                "grok",
-                session_id,
-                cwd,
-                title,
-                timestamp,
-                value.get("type"),
-                text,
-                chat_path,
-            )
-            if record is not None:
-                yield record
+    for value in _iter_jsonl_values(chat_path, None):
+        if value.get("type") not in {"user", "assistant"}:
+            continue
+        text = extract_text(value.get("content"))
+        record = _record(
+            "grok",
+            session_id,
+            cwd,
+            title,
+            timestamp,
+            value.get("type"),
+            text,
+            chat_path,
+        )
+        if record is not None:
+            yield record
 
 
 def _filename_session_id(path: Path) -> str:
@@ -332,46 +354,33 @@ def iter_codex_records(rollout_path: Path) -> Iterator[MessageRecord]:
     session_id = _filename_session_id(rollout_path)
     cwd = ""
     session_timestamp: Any = None
-    title = ""
-    try:
-        handle = rollout_path.open("r", encoding="utf-8", errors="replace")
-    except OSError:
-        return
-    with handle:
-        for line in handle:
-            # Cheap pre-filter: most lines are tool calls we never use.
-            if '"message"' not in line and "session_meta" not in line:
-                continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(value, dict):
-                continue
-            payload = value.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            line_type = value.get("type")
-            if line_type == "session_meta":
-                session_id = str(payload.get("id") or session_id)
-                cwd = str(payload.get("cwd") or cwd)
-                session_timestamp = payload.get("timestamp") or value.get("timestamp")
-                continue
-            if payload.get("type") != "message":
-                continue
-            text = extract_text(payload.get("content"))
-            record = _record(
-                "codex",
-                session_id,
-                cwd,
-                title,
-                value.get("timestamp") or payload.get("timestamp") or session_timestamp,
-                payload.get("role"),
-                text,
-                rollout_path,
-            )
-            if record is not None:
-                yield record
+    for value in _iter_jsonl_values(
+        rollout_path, _CODEX_JSONL_RE, (b'"message"', b'session_meta')
+    ):
+        payload = value.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        line_type = value.get("type")
+        if line_type == "session_meta":
+            session_id = str(payload.get("id") or session_id)
+            cwd = str(payload.get("cwd") or cwd)
+            session_timestamp = payload.get("timestamp") or value.get("timestamp")
+            continue
+        if payload.get("type") != "message":
+            continue
+        text = extract_text(payload.get("content"))
+        record = _record(
+            "codex",
+            session_id,
+            cwd,
+            "",
+            value.get("timestamp") or payload.get("timestamp") or session_timestamp,
+            payload.get("role"),
+            text,
+            rollout_path,
+        )
+        if record is not None:
+            yield record
 
 
 def _kimi_workspace_path(value: Any, text: str) -> str:
@@ -382,6 +391,8 @@ def _kimi_workspace_path(value: Any, text: str) -> str:
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate:
                 return candidate
+    if "Workspace Path" not in text and "工作区路径" not in text:
+        return ""
     match = WORKSPACE_PATH_RE.search(text)
     return match.group(1).strip() if match else ""
 
@@ -392,85 +403,60 @@ def iter_kimi_records(wire_path: Path) -> Iterator[MessageRecord]:
     session_dir = wire_path.parent.parent.parent
     session_id = session_dir.name
     cwd = ""
-    title = ""
-    try:
-        handle = wire_path.open("r", encoding="utf-8", errors="replace")
-    except OSError:
-        return
-    with handle:
-        for line in handle:
-            if "context.append_message" not in line:
-                continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(value, dict) or value.get("type") != "context.append_message":
-                continue
-            message = value.get("message")
-            if not isinstance(message, dict):
-                continue
-            text = extract_text(message.get("content"))
-            if not text:
-                continue
-            cwd = _kimi_workspace_path(message, text) or cwd
-            origin = message.get("origin")
-            if not isinstance(origin, dict):
-                origin = value.get("origin") if isinstance(value.get("origin"), dict) else {}
-            role = message.get("role")
-            if origin.get("kind") == "user":
-                role = "user"
-            record = _record(
-                "kimi-code",
-                session_id,
-                cwd,
-                title,
-                value.get("time") or message.get("time"),
-                role,
-                text,
-                wire_path,
-            )
-            if record is not None:
-                yield record
+    for value in _iter_jsonl_values(wire_path, _KIMI_JSONL_RE, (b"context.append_message",)):
+        if value.get("type") != "context.append_message":
+            continue
+        message = value.get("message")
+        if not isinstance(message, dict):
+            continue
+        text = extract_text(message.get("content"))
+        if not text:
+            continue
+        cwd = _kimi_workspace_path(message, text) or cwd
+        origin = message.get("origin")
+        if not isinstance(origin, dict):
+            origin = value.get("origin") if isinstance(value.get("origin"), dict) else {}
+        role = message.get("role")
+        if origin.get("kind") == "user":
+            role = "user"
+        record = _record(
+            "kimi-code",
+            session_id,
+            cwd,
+            "",
+            value.get("time") or message.get("time"),
+            role,
+            text,
+            wire_path,
+        )
+        if record is not None:
+            yield record
 
 
 def iter_claude_records(transcript_path: Path) -> Iterator[MessageRecord]:
     """Stream user and assistant messages from a Claude transcript."""
 
     fallback_session_id = transcript_path.stem
-    try:
-        handle = transcript_path.open("r", encoding="utf-8", errors="replace")
-    except OSError:
-        return
-    with handle:
-        for line in handle:
-            if '"message"' not in line:
-                continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(value, dict):
-                continue
-            message = value.get("message")
-            if not isinstance(message, dict):
-                continue
-            outer_type = value.get("type")
-            if outer_type not in {"user", "assistant"}:
-                continue
-            text = extract_text(message.get("content"))
-            session_id = value.get("sessionId") or value.get("session_id") or fallback_session_id
-            cwd = value.get("cwd") or value.get("directory") or ""
-            timestamp = value.get("timestamp") or message.get("timestamp")
-            record = _record(
-                "claude",
-                session_id,
-                cwd,
-                value.get("title") or "",
-                timestamp,
-                message.get("role") or outer_type,
-                text,
-                transcript_path,
-            )
-            if record is not None:
-                yield record
+    for value in _iter_jsonl_values(transcript_path, None, (b'"message"',)):
+        message = value.get("message")
+        if not isinstance(message, dict):
+            continue
+        outer_type = value.get("type")
+        if outer_type not in {"user", "assistant"}:
+            continue
+        text = extract_text(message.get("content"))
+        session_id = value.get("sessionId") or value.get("session_id") or fallback_session_id
+        cwd = value.get("cwd") or value.get("directory") or ""
+        timestamp = value.get("timestamp") or message.get("timestamp")
+        record = _record(
+            "claude",
+            session_id,
+            cwd,
+            value.get("title") or "",
+            timestamp,
+            message.get("role") or outer_type,
+            text,
+            transcript_path,
+        )
+        if record is not None:
+            yield record
