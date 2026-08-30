@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	commandregistry "github.com/BayInl/session-finder/cmd/session-finder/registry"
+	"github.com/BayInl/session-finder/internal/decisions"
+	_ "github.com/BayInl/session-finder/internal/skill"
 )
 
 // commandHandler is kept as an alias for existing main-package tests. New
@@ -21,6 +23,7 @@ func init() {
 	RegisterCommand("index", runIndex)
 	RegisterCommand("search", runSearch)
 	RegisterCommand("show", runShow)
+	decisions.RegisterCommand()
 }
 
 func runRegistered(name string, argv []string) error {

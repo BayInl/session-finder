@@ -58,12 +58,50 @@ session-finder show SESSION_ID
 session-finder show SESSION_ID --role assistant --limit 20
 ```
 
+## Decision ledger
+
+`session-finder` can mine indexed sessions for the *why* behind decisions —
+options considered, the chosen one, and the rationale — with every record
+backed by an exact quote from the original transcript.
+
+```sh
+session-finder decisions extract              # scan sessions for decision candidates
+session-finder decisions list                 # review queue
+session-finder decisions list --json
+session-finder decisions review               # approve / reject / defer / edit each candidate
+```
+
+Nothing is recorded until you approve it: candidates start as drafts, every
+review action is written to an append-only audit log, and evidence quotes are
+verified against the source messages.
+
+## Skill compiler
+
+Successful sessions can be distilled into reusable skills following the
+[Agent Skills](https://agentskills.io/) open format:
+
+```sh
+session-finder skill extract --pending        # scan new sessions for skill candidates
+session-finder skill review                   # approve / reject / defer / edit / split evidence blocks
+session-finder skill publish                  # write approved skills to ~/.agents/skills
+session-finder skill list
+```
+
+Quality gates suppress one-off or low-evidence sessions automatically, and
+publishing never overwrites an existing skill of the same name. Extraction
+runs fully offline by default; setting `SESSION_FINDER_LLM_*` environment
+variables opts into an OpenAI-compatible LLM for higher-precision extraction,
+with automatic redaction of tokens, keys, and other secrets before anything
+leaves the machine.
+
 For all options, run:
 
 ```sh
 session-finder --help
 session-finder search --help
 session-finder show --help
+session-finder decisions --help
+session-finder skill --help
 ```
 
 ## Supported sources
