@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -51,12 +52,55 @@ _FTS_TRIGGER_NAMES = (
 )
 
 
+@dataclass
+class _SessionState:
+    """Cached session metadata while one source is being inserted."""
+
+    session_pk: int
+    cwd: str
+    title: str
+    created: float | None
+    updated: float | None
+    dirty: bool = False
+
+
 def _drop_fts_triggers(connection: sqlite3.Connection) -> None:
     """Drop per-row FTS triggers so bulk inserts skip per-row index updates."""
 
     for name in _FTS_TRIGGER_NAMES:
         connection.execute(f"DROP TRIGGER IF EXISTS {name}")
 
+
+def _remove_sources_skipped_column(connection: sqlite3.Connection) -> None:
+    """Migrate legacy ``sources`` rows to the schema without ``skipped``."""
+
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(sources)")}
+    if "skipped" not in columns:
+        return
+    if sqlite3.sqlite_version_info >= (3, 35, 0):
+        connection.execute("ALTER TABLE sources DROP COLUMN skipped")
+        return
+
+    # SQLite before 3.35 has no DROP COLUMN. Rebuild this tiny metadata table
+    # while preserving every source signature.
+    connection.execute("ALTER TABLE sources RENAME TO sources_legacy")
+    connection.execute(
+        """
+        CREATE TABLE sources (
+            source_path TEXT PRIMARY KEY,
+            tool TEXT NOT NULL,
+            mtime REAL NOT NULL,
+            size INTEGER NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO sources(source_path, tool, mtime, size)
+        SELECT source_path, tool, mtime, size FROM sources_legacy
+        """
+    )
+    connection.execute("DROP TABLE sources_legacy")
 
 
 def open_index(db_path: Path = DEFAULT_INDEX_PATH) -> sqlite3.Connection:
@@ -126,8 +170,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             source_path TEXT PRIMARY KEY,
             tool TEXT NOT NULL,
             mtime REAL NOT NULL,
-            size INTEGER NOT NULL,
-            skipped INTEGER NOT NULL DEFAULT 0
+            size INTEGER NOT NULL
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -153,9 +196,18 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         """
         + FTS_TRIGGERS_SQL
     )
-    # Backfill the trigram index when it exists but lags behind messages
-    # (e.g. it was added to an older index file).
+    source_columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(sources)")
+    }
+    if "skipped" in source_columns:
+        _remove_sources_skipped_column(connection)
+
+    # Backfill either external-content FTS index when it is missing or lags
+    # behind messages (for example, an index created by an older release).
     messages_count = connection.execute("SELECT count(*) FROM messages").fetchone()[0]
+    fts_count = connection.execute("SELECT count(*) FROM messages_fts").fetchone()[0]
+    if fts_count != messages_count:
+        connection.execute("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')")
     tri_count = connection.execute("SELECT count(*) FROM messages_tri").fetchone()[0]
     if tri_count != messages_count:
         connection.execute("INSERT INTO messages_tri(messages_tri) VALUES ('rebuild')")
@@ -256,15 +308,20 @@ def _merge_max(current: float | None, candidate: float | None) -> float | None:
 
 def _get_or_create_session(
     connection: sqlite3.Connection,
-    cache: dict[tuple[str, str, str], int],
+    cache: dict[tuple[str, str, str], _SessionState],
     record: MessageRecord,
+    timestamp: float | None = None,
 ) -> int:
-    """Get or create a source-specific session row and merge metadata."""
+    """Get or create a source-specific session row and merge metadata.
+
+    Session metadata is kept in ``cache`` for the duration of one source
+    import.  This avoids a metadata ``SELECT`` and potentially an ``UPDATE``
+    for every message in a large session; callers flush dirty states once.
+    """
 
     key = (record.tool, record.session_id, record.source_path)
-    session_pk = cache.get(key)
-    timestamp = _timestamp_to_epoch(record.timestamp)
-    if session_pk is None:
+    state = cache.get(key)
+    if state is None:
         row = connection.execute(
             """
             SELECT id, cwd, title, created, updated
@@ -292,54 +349,52 @@ def _get_or_create_session(
                     record.source_path,
                 ),
             )
-            session_pk = int(cursor.lastrowid)
-            cache[key] = session_pk
-            return session_pk
-        session_pk = int(row[0])
-        cache[key] = session_pk
+            state = _SessionState(
+                session_pk=int(cursor.lastrowid),
+                cwd=record.cwd,
+                title=title,
+                created=timestamp,
+                updated=timestamp,
+            )
+        else:
+            state = _SessionState(
+                session_pk=int(row[0]),
+                cwd=str(row[1] or ""),
+                title=str(row[2] or ""),
+                created=row[3],
+                updated=row[4],
+            )
+        cache[key] = state
 
-    row = connection.execute(
-        "SELECT cwd, title, created, updated FROM sessions WHERE id = ?",
-        (session_pk,),
-    ).fetchone()
-    if row is None:
-        cache.pop(key, None)
-        return _get_or_create_session(connection, cache, record)
-    cwd = row[0] or record.cwd
-    title = row[1] or record.title
-    if not title and record.role == "user":
-        title = parsers.title_from_text(record.text)
-    created = _merge_min(row[2], timestamp)
-    updated = _merge_max(row[3], timestamp)
-    if cwd != row[0] or title != row[1] or created != row[2] or updated != row[3]:
-        connection.execute(
-            """
-            UPDATE sessions
-            SET cwd = ?, title = ?, created = ?, updated = ?
-            WHERE id = ?
-            """,
-            (cwd, title, created, updated, session_pk),
-        )
-    return session_pk
+    previous = (state.cwd, state.title, state.created, state.updated)
+    state.cwd = state.cwd or record.cwd
+    state.title = state.title or record.title
+    if not state.title and record.role == "user":
+        state.title = parsers.title_from_text(record.text)
+    state.created = _merge_min(state.created, timestamp)
+    state.updated = _merge_max(state.updated, timestamp)
+    if previous != (state.cwd, state.title, state.created, state.updated):
+        state.dirty = True
+    return state.session_pk
 
 
 def _upsert_source(
     connection: sqlite3.Connection,
     spec: SourceSpec,
     signature: tuple[float, int],
-    skipped: bool,
 ) -> None:
+    """Record the source signature after a successful import."""
+
     connection.execute(
         """
-        INSERT INTO sources(source_path, tool, mtime, size, skipped)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO sources(source_path, tool, mtime, size)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(source_path) DO UPDATE SET
             tool = excluded.tool,
             mtime = excluded.mtime,
-            size = excluded.size,
-            skipped = excluded.skipped
+            size = excluded.size
         """,
-        (str(spec.path), spec.tool, signature[0], signature[1], int(skipped)),
+        (str(spec.path), spec.tool, signature[0], signature[1]),
     )
 
 
@@ -349,30 +404,40 @@ def _source_is_unchanged(
     signature: tuple[float, int],
 ) -> bool:
     row = connection.execute(
-        "SELECT mtime, size, skipped FROM sources WHERE source_path = ?",
+        "SELECT mtime, size FROM sources WHERE source_path = ?",
         (str(spec.path),),
     ).fetchone()
     return bool(
         row
         and float(row[0]) == signature[0]
         and int(row[1]) == signature[1]
-        and int(row[2]) == 0
     )
 
 
 def _insert_records(connection: sqlite3.Connection, records: Iterable[MessageRecord]) -> tuple[int, int]:
     """Insert a record stream with one executemany batch. Returns (sessions, messages)."""
 
-    cache: dict[tuple[str, str, str], int] = {}
+    cache: dict[tuple[str, str, str], _SessionState] = {}
     batch: list[tuple[int, str, float | None, str]] = []
     for record in records:
-        session_pk = _get_or_create_session(connection, cache, record)
-        batch.append(
-            (session_pk, record.role, _timestamp_to_epoch(record.timestamp), record.text)
-        )
+        timestamp = _timestamp_to_epoch(record.timestamp)
+        session_pk = _get_or_create_session(connection, cache, record, timestamp)
+        batch.append((session_pk, record.role, timestamp, record.text))
     connection.executemany(
         "INSERT INTO messages(session_pk, role, ts, text) VALUES (?, ?, ?, ?)",
         batch,
+    )
+    dirty_states = [state for state in cache.values() if state.dirty]
+    connection.executemany(
+        """
+        UPDATE sessions
+        SET cwd = ?, title = ?, created = ?, updated = ?
+        WHERE id = ?
+        """,
+        [
+            (state.cwd, state.title, state.created, state.updated, state.session_pk)
+            for state in dirty_states
+        ],
     )
     return (len(cache), len(batch))
 
@@ -416,7 +481,7 @@ def _index_source(
                 str(spec.path),
             ),
         )
-    _upsert_source(connection, spec, signature, skipped=False)
+    _upsert_source(connection, spec, signature)
     return (sessions_count, message_count)
 
 
@@ -471,7 +536,7 @@ def _index_opencode(
             " VALUES (?, ?)",
             (sid, current[sid]),
         )
-    _upsert_source(connection, spec, signature, skipped=False)
+    _upsert_source(connection, spec, signature)
     return (sessions_count, message_count)
 
 
@@ -805,7 +870,7 @@ def show_messages(
 
     if not session_prefix:
         return []
-    params: list[Any] = [ _escape_like(session_prefix) + "%" ]
+    params: list[Any] = [_escape_like(session_prefix) + "%"]
     where = ["s.session_id LIKE ? ESCAPE '\\'"]
     if role:
         where.append("m.role = ?")
@@ -813,22 +878,39 @@ def show_messages(
     sql = f"""
         SELECT
             s.tool, s.session_id, s.title, s.cwd, s.created, s.updated,
-            m.role, m.ts, m.text, m.id
+            m.role, m.ts, m.text, m.id, s.id
         FROM sessions AS s
         JOIN messages AS m ON m.session_pk = s.id
         WHERE {" AND ".join(where)}
         ORDER BY s.tool, s.session_id, COALESCE(m.ts, 0), m.id
     """
+    # Keep the old Python guard for non-positive direct-helper calls, while
+    # allowing SQLite to stop early for the normal positive-limit path.
+    if limit is not None and limit > 0:
+        sql += " LIMIT ?"
+        params.append(limit)
+
+    session_metadata: dict[int, tuple[str, str, str, str]] = {}
     rows: list[dict[str, Any]] = []
     for row in connection.execute(sql, params):
+        session_pk = int(row[10])
+        metadata = session_metadata.get(session_pk)
+        if metadata is None:
+            metadata = (
+                row[2] or "",
+                row[3] or "",
+                format_timestamp(row[4]),
+                format_timestamp(row[5]),
+            )
+            session_metadata[session_pk] = metadata
         rows.append(
             {
                 "tool": row[0],
                 "session_id": row[1],
-                "title": row[2] or "",
-                "cwd": row[3] or "",
-                "created": format_timestamp(row[4]),
-                "updated": format_timestamp(row[5]),
+                "title": metadata[0],
+                "cwd": metadata[1],
+                "created": metadata[2],
+                "updated": metadata[3],
                 "role": row[6],
                 "timestamp": format_timestamp(row[7]),
                 "text": row[8],

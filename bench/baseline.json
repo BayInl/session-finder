@@ -1,0 +1,402 @@
+{
+  "format": 2,
+  "db": {
+    "label": "index.db",
+    "size_bytes": 426561536
+  },
+  "environment": {
+    "platform": "Darwin",
+    "python": "3.13.9",
+    "sqlite": "3.51.0"
+  },
+  "source_snapshot": {
+    "digest": "4ef115aaf4fca6edb7fe7e040c4f700d2f44eca64dd173c47147cea1b8c0dc2e",
+    "files": 926,
+    "bytes": 2828615704
+  },
+  "search": {
+    "opencode": {
+      "query": "opencode",
+      "repeats": 3,
+      "timing": {
+        "min_ms": 10.139457997865975,
+        "median_ms": 10.267167002893984,
+        "p95_ms": 10.440641071181744,
+        "max_ms": 10.459915967658162
+      },
+      "durations_ms": [
+        10.459915967658162,
+        10.267167002893984,
+        10.139457997865975
+      ]
+    },
+    "tavily": {
+      "query": "tavily",
+      "repeats": 3,
+      "timing": {
+        "min_ms": 2.5476249866187572,
+        "median_ms": 2.5625830749049783,
+        "p95_ms": 2.606383233796805,
+        "max_ms": 2.6112499181181192
+      },
+      "durations_ms": [
+        2.6112499181181192,
+        2.5625830749049783,
+        2.5476249866187572
+      ]
+    },
+    "chinese": {
+      "query": "论文",
+      "repeats": 3,
+      "timing": {
+        "min_ms": 65.15862501692027,
+        "median_ms": 66.71366607770324,
+        "p95_ms": 80.4705791757442,
+        "max_ms": 81.99912507552654
+      },
+      "durations_ms": [
+        66.71366607770324,
+        81.99912507552654,
+        65.15862501692027
+      ]
+    },
+    "multi_term": {
+      "query": "opencode 中转",
+      "repeats": 3,
+      "timing": {
+        "min_ms": 66.00574997719377,
+        "median_ms": 67.83787498716265,
+        "p95_ms": 68.82768785580993,
+        "max_ms": 68.9376670634374
+      },
+      "durations_ms": [
+        67.83787498716265,
+        66.00574997719377,
+        68.9376670634374
+      ]
+    },
+    "underscore": {
+      "query": "tavily_mcp",
+      "repeats": 3,
+      "timing": {
+        "min_ms": 1.1652499670162797,
+        "median_ms": 1.185708912089467,
+        "p95_ms": 1.2323208851739764,
+        "max_ms": 1.2374999932944775
+      },
+      "durations_ms": [
+        1.2374999932944775,
+        1.185708912089467,
+        1.1652499670162797
+      ]
+    }
+  },
+  "search_results": {
+    "opencode": {
+      "query": "opencode",
+      "count": 20,
+      "sha256": "8c11fe4a8468845f939e3bd505d31951df20cab53d2e70ec5568698c38e233cb"
+    },
+    "tavily": {
+      "query": "tavily",
+      "count": 20,
+      "sha256": "31cebe9516af97b4c99fadebf2cb68d1f1a879c0f9910deb615221d621954f2d"
+    },
+    "chinese": {
+      "query": "论文",
+      "count": 20,
+      "sha256": "d7120b57f83a9ec5cbb7443c984b8aa0f35203110bb091c338a3b2429b025c22"
+    },
+    "multi_term": {
+      "query": "opencode 中转",
+      "count": 15,
+      "sha256": "26c4c280c6d170ca00ef69b8e6e8fd3e8047b86a15f76d1346ce761ea3bcb29e"
+    },
+    "underscore": {
+      "query": "tavily_mcp",
+      "count": 8,
+      "sha256": "9db8ab683915f9cc5a790ae9b0f69bb3b6cce9103382b1d78623097540e982df"
+    }
+  },
+  "show": {
+    "prefix_broad": {
+      "case": {
+        "session_prefix": "ses_",
+        "limit": 100
+      },
+      "repeats": 1,
+      "timing": {
+        "min_ms": 14.978499966673553,
+        "median_ms": 14.978499966673553,
+        "p95_ms": 14.978499966673553,
+        "max_ms": 14.978499966673553
+      },
+      "durations_ms": [
+        14.978499966673553
+      ]
+    },
+    "prefix_user": {
+      "case": {
+        "session_prefix": "ses_",
+        "role": "user",
+        "limit": 100
+      },
+      "repeats": 1,
+      "timing": {
+        "min_ms": 7.1403339970856905,
+        "median_ms": 7.1403339970856905,
+        "p95_ms": 7.1403339970856905,
+        "max_ms": 7.1403339970856905
+      },
+      "durations_ms": [
+        7.1403339970856905
+      ]
+    },
+    "prefix_missing": {
+      "case": {
+        "session_prefix": "__session_finder_bench_missing__",
+        "limit": 100
+      },
+      "repeats": 1,
+      "timing": {
+        "min_ms": 2.0490410970523953,
+        "median_ms": 2.0490410970523953,
+        "p95_ms": 2.0490410970523953,
+        "max_ms": 2.0490410970523953
+      },
+      "durations_ms": [
+        2.0490410970523953
+      ]
+    }
+  },
+  "show_results": {
+    "prefix_broad": {
+      "case": {
+        "session_prefix": "ses_",
+        "limit": 100
+      },
+      "count": 100,
+      "sha256": "289d3b6354b209ccb3504a3015a8e3cbf0b06a66bb206aa31e8042fc63085534"
+    },
+    "prefix_user": {
+      "case": {
+        "session_prefix": "ses_",
+        "role": "user",
+        "limit": 100
+      },
+      "count": 100,
+      "sha256": "781691159c9028e80b37913519491541aa196bcdd14a7b68cabe4c64cfa0fcaf"
+    },
+    "prefix_missing": {
+      "case": {
+        "session_prefix": "__session_finder_bench_missing__",
+        "limit": 100
+      },
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
+  "incremental": {
+    "repeats": 1,
+    "durations_s": [
+      0.21841037494596094
+    ],
+    "timing": {
+      "min_ms": 218.41037494596094,
+      "median_ms": 218.41037494596094,
+      "p95_ms": 218.41037494596094,
+      "max_ms": 218.41037494596094
+    },
+    "summaries": [
+      {
+        "tools": {
+          "opencode": {
+            "sessions": 131,
+            "messages": 5219
+          },
+          "grok": {
+            "sessions": 32,
+            "messages": 513
+          },
+          "codex": {
+            "sessions": 662,
+            "messages": 37955
+          },
+          "kimi-code": {
+            "sessions": 15,
+            "messages": 2147
+          },
+          "claude": {
+            "sessions": 0,
+            "messages": 0
+          }
+        },
+        "sources": {
+          "processed": 12,
+          "unchanged": 880,
+          "errors": 0
+        }
+      }
+    ],
+    "search_results": [
+      {
+        "opencode": {
+          "query": "opencode",
+          "count": 20,
+          "sha256": "8c11fe4a8468845f939e3bd505d31951df20cab53d2e70ec5568698c38e233cb"
+        },
+        "tavily": {
+          "query": "tavily",
+          "count": 20,
+          "sha256": "51d252f23a5f207fedb42c75792c37d7dba485cea264cc8184bbe5ccd7c6825c"
+        },
+        "chinese": {
+          "query": "论文",
+          "count": 20,
+          "sha256": "d7120b57f83a9ec5cbb7443c984b8aa0f35203110bb091c338a3b2429b025c22"
+        },
+        "multi_term": {
+          "query": "opencode 中转",
+          "count": 15,
+          "sha256": "26c4c280c6d170ca00ef69b8e6e8fd3e8047b86a15f76d1346ce761ea3bcb29e"
+        },
+        "underscore": {
+          "query": "tavily_mcp",
+          "count": 8,
+          "sha256": "24f37c1c5bd3428b3c76945847d7f353eef270d34b3e0e1904b91a5664969c91"
+        }
+      }
+    ],
+    "show_results": [
+      {
+        "prefix_broad": {
+          "case": {
+            "session_prefix": "ses_",
+            "limit": 100
+          },
+          "count": 100,
+          "sha256": "289d3b6354b209ccb3504a3015a8e3cbf0b06a66bb206aa31e8042fc63085534"
+        },
+        "prefix_user": {
+          "case": {
+            "session_prefix": "ses_",
+            "role": "user",
+            "limit": 100
+          },
+          "count": 100,
+          "sha256": "781691159c9028e80b37913519491541aa196bcdd14a7b68cabe4c64cfa0fcaf"
+        },
+        "prefix_missing": {
+          "case": {
+            "session_prefix": "__session_finder_bench_missing__",
+            "limit": 100
+          },
+          "count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      }
+    ]
+  },
+  "full_rebuild": {
+    "repeats": 1,
+    "durations_s": [
+      16.732204541913234
+    ],
+    "timing": {
+      "min_ms": 16732.204541913234,
+      "median_ms": 16732.204541913234,
+      "p95_ms": 16732.204541913234,
+      "max_ms": 16732.204541913234
+    },
+    "summaries": [
+      {
+        "tools": {
+          "opencode": {
+            "sessions": 131,
+            "messages": 5219
+          },
+          "grok": {
+            "sessions": 32,
+            "messages": 513
+          },
+          "codex": {
+            "sessions": 662,
+            "messages": 37955
+          },
+          "kimi-code": {
+            "sessions": 15,
+            "messages": 2147
+          },
+          "claude": {
+            "sessions": 0,
+            "messages": 0
+          }
+        },
+        "sources": {
+          "processed": 892,
+          "unchanged": 0,
+          "errors": 0
+        }
+      }
+    ],
+    "search_results": [
+      {
+        "opencode": {
+          "query": "opencode",
+          "count": 20,
+          "sha256": "8c11fe4a8468845f939e3bd505d31951df20cab53d2e70ec5568698c38e233cb"
+        },
+        "tavily": {
+          "query": "tavily",
+          "count": 20,
+          "sha256": "51d252f23a5f207fedb42c75792c37d7dba485cea264cc8184bbe5ccd7c6825c"
+        },
+        "chinese": {
+          "query": "论文",
+          "count": 20,
+          "sha256": "d7120b57f83a9ec5cbb7443c984b8aa0f35203110bb091c338a3b2429b025c22"
+        },
+        "multi_term": {
+          "query": "opencode 中转",
+          "count": 15,
+          "sha256": "26c4c280c6d170ca00ef69b8e6e8fd3e8047b86a15f76d1346ce761ea3bcb29e"
+        },
+        "underscore": {
+          "query": "tavily_mcp",
+          "count": 8,
+          "sha256": "24f37c1c5bd3428b3c76945847d7f353eef270d34b3e0e1904b91a5664969c91"
+        }
+      }
+    ],
+    "show_results": [
+      {
+        "prefix_broad": {
+          "case": {
+            "session_prefix": "ses_",
+            "limit": 100
+          },
+          "count": 100,
+          "sha256": "289d3b6354b209ccb3504a3015a8e3cbf0b06a66bb206aa31e8042fc63085534"
+        },
+        "prefix_user": {
+          "case": {
+            "session_prefix": "ses_",
+            "role": "user",
+            "limit": 100
+          },
+          "count": 100,
+          "sha256": "781691159c9028e80b37913519491541aa196bcdd14a7b68cabe4c64cfa0fcaf"
+        },
+        "prefix_missing": {
+          "case": {
+            "session_prefix": "__session_finder_bench_missing__",
+            "limit": 100
+          },
+          "count": 0,
+          "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      }
+    ]
+  },
+  "wall_time_s": 20.70813350006938
+}
