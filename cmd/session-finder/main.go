@@ -53,6 +53,7 @@ func runIndex(argv []string) error {
 	set := flag.NewFlagSet("index", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	full := set.Bool("full", false, "rebuild the index from scratch")
+	dbPath := set.String("db", "", "path to the SQLite index database")
 	if err := set.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -62,7 +63,7 @@ func runIndex(argv []string) error {
 	if set.NArg() != 0 {
 		return usageError("index accepts no positional arguments")
 	}
-	summary, err := index.IndexAll(*full, "")
+	summary, err := index.IndexAll(*full, *dbPath)
 	if err != nil {
 		return err
 	}
@@ -79,6 +80,7 @@ func runSearch(argv []string) error {
 	limit := set.Int("limit", 20, "maximum sessions to show")
 	asJSON := set.Bool("json", false, "emit JSON")
 	includeSystem := set.Bool("all", false, "include system/noise records (default hides them)")
+	dbPath := set.String("db", "", "path to the SQLite index database")
 	query, helpRequested, err := parseFlagsAndArg(set, argv, "search")
 	if err != nil {
 		return err
@@ -92,7 +94,7 @@ func runSearch(argv []string) error {
 	if *limit <= 0 {
 		return usageError("limit must be positive")
 	}
-	db, err := index.Open("")
+	db, err := index.Open(*dbPath)
 	if err != nil {
 		return err
 	}
@@ -129,6 +131,7 @@ func runShow(argv []string) error {
 	set.SetOutput(os.Stderr)
 	role := set.String("role", "", "filter by role (user, assistant, or system)")
 	limit := set.Int("limit", 0, "maximum messages to show")
+	dbPath := set.String("db", "", "path to the SQLite index database")
 	arg, helpRequested, err := parseFlagsAndArg(set, argv, "show")
 	if err != nil {
 		return err
@@ -151,7 +154,7 @@ func runShow(argv []string) error {
 	if limitSet && *limit <= 0 {
 		return usageError("--limit must be positive")
 	}
-	db, err := index.Open("")
+	db, err := index.Open(*dbPath)
 	if err != nil {
 		return err
 	}
@@ -182,7 +185,7 @@ func parseFlagsAndArg(set *flag.FlagSet, argv []string, command string) (string,
 		if strings.HasPrefix(arg, "-") {
 			flags = append(flags, arg)
 			name := strings.TrimLeft(strings.SplitN(arg, "=", 2)[0], "-")
-			if !strings.Contains(arg, "=") && (name == "tool" || name == "cwd" || name == "after" || name == "limit" || name == "role") && i+1 < len(argv) {
+			if !strings.Contains(arg, "=") && (name == "tool" || name == "cwd" || name == "after" || name == "limit" || name == "role" || name == "db") && i+1 < len(argv) {
 				flags = append(flags, argv[i+1])
 				i++
 			}

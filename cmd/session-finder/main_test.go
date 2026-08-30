@@ -35,14 +35,15 @@ func TestParseFlagsAndArgAcceptsFlagsAfterPositional(t *testing.T) {
 	set := flag.NewFlagSet("search", flag.ContinueOnError)
 	set.SetOutput(io.Discard)
 	tool := set.String("tool", "", "")
+	dbPath := set.String("db", "", "")
 	asJSON := set.Bool("json", false, "")
 
-	arg, helpRequested, err := parseFlagsAndArg(set, []string{"alpha", "--json", "--tool", "codex"}, "search")
+	arg, helpRequested, err := parseFlagsAndArg(set, []string{"alpha", "--json", "--tool", "codex", "--db", "/tmp/index.db"}, "search")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if helpRequested || arg != "alpha" || !*asJSON || *tool != "codex" {
-		t.Fatalf("arg=%q help=%v json=%v tool=%q", arg, helpRequested, *asJSON, *tool)
+	if helpRequested || arg != "alpha" || !*asJSON || *tool != "codex" || *dbPath != "/tmp/index.db" {
+		t.Fatalf("arg=%q help=%v json=%v tool=%q db=%q", arg, helpRequested, *asJSON, *tool, *dbPath)
 	}
 }
 
