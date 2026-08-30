@@ -407,8 +407,18 @@ func FormatTimestamp(value any) string {
 	if !ok || epoch == nil {
 		return "-"
 	}
+	// Python's datetime.fromtimestamp rounds the fractional second to the
+	// nearest microsecond using ties-to-even before isoformat(timespec="seconds")
+	// drops the remainder. Split before scaling so float multiplication cannot
+	// move a value just below a half-microsecond across the tie.
 	seconds := math.Floor(*epoch)
-	return time.Unix(int64(seconds), int64((*epoch-seconds)*1e9)).UTC().Format("2006-01-02T15:04:05Z")
+	fraction := *epoch - seconds
+	micros := int64(math.RoundToEven(fraction * 1e6))
+	if micros == 1_000_000 {
+		seconds++
+		micros = 0
+	}
+	return time.Unix(int64(seconds), micros*1_000).UTC().Format("2006-01-02T15:04:05Z")
 }
 
 func mergeMin(current, candidate *float64) *float64 {
