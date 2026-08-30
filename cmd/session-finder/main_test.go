@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"io"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +30,26 @@ func TestPythonStyleRepr(t *testing.T) {
 				t.Fatalf("pythonStyleRepr(%q) = %q, want %q", test.value, got, test.want)
 			}
 		})
+	}
+}
+
+func TestPrintRootUsageDoesNotDuplicateFlags(t *testing.T) {
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	printRootUsage()
+	_ = writer.Close()
+	os.Stdout = original
+	output, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(output), "[flags]"); got != 1 {
+		t.Fatalf("help output contains [flags] %d times: %q", got, output)
 	}
 }
 
