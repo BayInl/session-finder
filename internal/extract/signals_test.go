@@ -67,6 +67,41 @@ func TestSignalEngineNoiseAndSecretSuppression(t *testing.T) {
 	}
 }
 
+func TestSignalEngineIgnoresPathsAndEmailForSecretRisk(t *testing.T) {
+	bundle := Analyze([]record.MessageRecord{
+		message("user", "Please document the workflow for this project."),
+		message("assistant", "Use /Users/alice/project and /home/alice/project; contact alice@example.com."),
+	})
+	if bundle.SecretRisk != 0 {
+		t.Fatalf("secret risk = %v, want 0 for paths and email", bundle.SecretRisk)
+	}
+	if bundle.RecommendedAction == ActionSuppress {
+		t.Fatalf("path-only transcript was suppressed: %+v", bundle)
+	}
+}
+
+func TestSignalEngineDetectsSupportedSecretFormats(t *testing.T) {
+	secrets := []struct {
+		name  string
+		value string
+	}{
+		{name: "github classic", value: "ghp_1234567890abcdef"},
+		{name: "github fine grained", value: "github_pat_1234567890abcdef"},
+		{name: "stripe", value: "sk_live_1234567890abcdef"},
+		{name: "rk", value: "rk_live_1234567890abcdef"},
+		{name: "slack webhook", value: "https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnop"},
+		{name: "jwt", value: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.signature12345"},
+	}
+	for _, test := range secrets {
+		t.Run(test.name, func(t *testing.T) {
+			bundle := Analyze([]record.MessageRecord{message("user", "Credential: "+test.value)})
+			if bundle.SecretRisk < 0.75 {
+				t.Fatalf("secret risk = %v for %q, want high risk", bundle.SecretRisk, test.value)
+			}
+		})
+	}
+}
+
 func TestSignalEngineEmptyTranscriptSuppresses(t *testing.T) {
 	bundle := Analyze([]record.MessageRecord{
 		message("system", "<user_info> hidden"),

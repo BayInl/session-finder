@@ -2,6 +2,7 @@ package extract
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -16,6 +17,38 @@ func testStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func TestOpenDBConfiguresSQLitePragmas(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := OpenDB(db, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("max open connections = %d, want 1", got)
+	}
+	var foreignKeys, busyTimeout int
+	if err := db.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeys != 1 || busyTimeout != 5000 {
+		t.Fatalf("pragmas = foreign_keys:%d busy_timeout:%d, want 1 and 5000", foreignKeys, busyTimeout)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var one int
+	if err := db.QueryRow("SELECT 1").Scan(&one); err != nil {
+		t.Fatalf("caller-owned database was closed: %v", err)
+	}
 }
 
 func TestStatusMachine(t *testing.T) {

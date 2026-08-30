@@ -274,6 +274,14 @@ func OpenDB(db *sql.DB, path string) (*Store, error) {
 		return nil, errors.New("nil database")
 	}
 	db.SetMaxOpenConns(1)
+	for _, pragma := range []string{
+		"PRAGMA foreign_keys = ON",
+		"PRAGMA busy_timeout = 5000",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			return nil, err
+		}
+	}
 	store := &Store{db: db, path: path, now: time.Now}
 	if err := store.InitializeSchema(context.Background()); err != nil {
 		return nil, err

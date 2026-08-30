@@ -481,14 +481,16 @@ func RedactRequest(request CompletionRequest) CompletionRequest {
 }
 
 var (
-	redactPrivateKeyRE = regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----`)
-	redactBearerRE     = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}`)
-	redactTokenRE      = regexp.MustCompile(`(?i)\b(?:sk|pk|rk)-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b|\b(?:ghp|github_pat|glpat|xox[baprs])-[A-Za-z0-9_-]{8,}\b|\bAKIA[0-9A-Z]{16}\b`)
-	redactAssignmentRE = regexp.MustCompile(`(?i)\b[A-Za-z0-9_]*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&,;]+)`)
-	redactEmailRE      = regexp.MustCompile(`\b[A-Za-z0-9._%+!-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
-	redactUnixPathRE   = regexp.MustCompile(`(?:^|[\s"'=(])(?:file://)?(?:~/|/(?:Users|home|var/folders|private/var|tmp)/)[^\s"'<>]+`)
-	redactWinPathRE    = regexp.MustCompile(`(?i)\b[A-Z]:\\[^\s"'<>]+`)
-	redactURLCredRE    = regexp.MustCompile(`(?i)(://[^:/\s]+:)[^@\s]+@`)
+	redactPrivateKeyRE   = regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----`)
+	redactBearerRE       = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}`)
+	redactTokenRE        = regexp.MustCompile(`(?i)\b(?:sk|pk|rk)[_-][A-Za-z0-9][A-Za-z0-9_-]{8,}\b|\b(?:ghp|github_pat|glpat|xox[baprs])[_-][A-Za-z0-9][A-Za-z0-9_-]{8,}\b|\bAKIA[0-9A-Z]{16}\b`)
+	redactSlackWebhookRE = regexp.MustCompile(`(?i)\bhttps?://hooks\.slack\.com/services/[^\s"'<>]+`)
+	redactJWTRE          = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
+	redactAssignmentRE   = regexp.MustCompile(`(?i)\b[A-Za-z0-9_]*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&,;]+)`)
+	redactEmailRE        = regexp.MustCompile(`\b[A-Za-z0-9._%+!-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
+	redactUnixPathRE     = regexp.MustCompile(`(?:^|[\s"'=(])(?:file://)?(?:~/|/(?:Users|home|var/folders|private/var|tmp)/)[^\s"'<>]+`)
+	redactWinPathRE      = regexp.MustCompile(`(?i)\b[A-Z]:\\[^\s"'<>]+`)
+	redactURLCredRE      = regexp.MustCompile(`(?i)(://[^:/\s]+:)[^@\s]+@`)
 )
 
 // Redact removes high-confidence secrets and personal identifiers while
@@ -501,6 +503,8 @@ func Redact(text string) string {
 	text = redactPrivateKeyRE.ReplaceAllString(text, "[REDACTED_PRIVATE_KEY]")
 	text = redactBearerRE.ReplaceAllString(text, "Bearer [REDACTED_TOKEN]")
 	text = redactTokenRE.ReplaceAllString(text, "[REDACTED_TOKEN]")
+	text = redactSlackWebhookRE.ReplaceAllString(text, "[REDACTED_TOKEN]")
+	text = redactJWTRE.ReplaceAllString(text, "[REDACTED_TOKEN]")
 	text = redactAssignmentRE.ReplaceAllString(text, "[REDACTED_SECRET]")
 	text = redactURLCredRE.ReplaceAllString(text, "$1[REDACTED_CREDENTIAL]@")
 	text = redactEmailRE.ReplaceAllString(text, "[REDACTED_EMAIL]")

@@ -33,7 +33,7 @@ func run(argv []string) error {
 }
 
 func printRootUsage() {
-	fmt.Println(rootUsage() + " [flags]")
+	fmt.Println(rootUsage())
 	fmt.Println("Search local AI sessions from opencode, Grok, Codex, Kimi Code, and Claude.")
 }
 

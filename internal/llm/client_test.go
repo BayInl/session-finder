@@ -56,6 +56,26 @@ secret
 	}
 }
 
+func TestRedactSupportsUnderscoreSecretsSlackAndJWT(t *testing.T) {
+	secrets := []string{
+		"ghp_1234567890abcdef",
+		"github_pat_1234567890abcdef",
+		"sk_live_1234567890abcdef",
+		"rk_live_1234567890abcdef",
+		"https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnop",
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.signature12345",
+	}
+	redacted := Redact(strings.Join(secrets, "\n"))
+	for _, secret := range secrets {
+		if strings.Contains(redacted, secret) {
+			t.Fatalf("redacted text contains %q: %s", secret, redacted)
+		}
+	}
+	if got := strings.Count(redacted, "[REDACTED_TOKEN]"); got != len(secrets) {
+		t.Fatalf("redacted token marker count = %d, want %d: %s", got, len(secrets), redacted)
+	}
+}
+
 func TestOpenAICompatibleClientRedactsBeforeRequestAndValidatesSchema(t *testing.T) {
 	var requestBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

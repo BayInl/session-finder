@@ -32,12 +32,13 @@ var (
 	workflowRE   = regexp.MustCompile(`(?i)\b(always|workflow|process|step[- ]by[- ]step|runbook|standard|reusable|repeatable|from now on)\b|以后|流程|步骤|规范|可复用|重复使用|长期`)
 	oneOffRE     = regexp.MustCompile(`(?i)\b(one[- ]off|one time|just this once|temporary|temp|quick fix|throwaway)\b|一次性|临时|只要这次|快速修一下`)
 
-	// These patterns intentionally identify only high-confidence secret/PII
-	// shapes. They produce a risk score, never the matched value.
-	secretTokenRE = regexp.MustCompile(`(?i)\b(?:sk|pk|rk)-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b|\b(?:ghp|github_pat|xox[baprs]|glpat)-[A-Za-z0-9_-]{10,}\b|\bAKIA[0-9A-Z]{16}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{16,}`)
-	emailRE       = regexp.MustCompile(`\b[A-Za-z0-9._%+!-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
-	privatePathRE = regexp.MustCompile(`(?:^|[\s"'=(])/(?:Users|home|私人|私有|var/folders|tmp)/[^\s"'<>]+`)
-	privateKeyRE  = regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----`)
+	// Paths and ordinary PII are privacy concerns, but are not counted as
+	// secret risk or quality failures. These patterns are high-confidence secrets.
+	secretTokenRE      = regexp.MustCompile(`(?i)\b(?:sk|pk|rk)[_-][A-Za-z0-9][A-Za-z0-9_-]{8,}\b|\b(?:ghp|github_pat|xox[baprs]|glpat)[_-][A-Za-z0-9][A-Za-z0-9_-]{8,}\b|\bAKIA[0-9A-Z]{16}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{16,}`)
+	secretAssignmentRE = regexp.MustCompile(`(?i)\b[A-Za-z0-9_]*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&,;]+)`)
+	slackWebhookRE     = regexp.MustCompile(`(?i)\bhttps?://hooks\.slack\.com/services/[^\s"'<>]+`)
+	jwtRE              = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
+	privateKeyRE       = regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----`)
 
 	passTestRE = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*\b(?:pass|passed|ok|success|successful|green)\b)|(?:\b(?:all tests?|tests?)\b[^\n]*(?:pass|passed|ok|success|successful|green)\b)|(?:测试(?:全部|都)?通过)|(?:\b0\s+(?:failures?|failed)\b)|(?m)^\s*(?:ok|PASS)\b`)
 	failTestRE = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*\b(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass|not passing)\b)|(?:\b(?:tests?|test suite)\b[^\n]*(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass|not passing)\b)|(?:测试失败|测试报错|panic|build failed)|(?m)^\s*FAIL\b`)
@@ -110,10 +111,6 @@ func (SignalEngine) Analyze(messages []record.MessageRecord) SignalBundle {
 		}
 		if failed {
 			failTests++
-		}
-		secretMatches := secretMatchCount(text)
-		if secretMatches > 0 {
-			negative += float64(secretMatches) * 0.5
 		}
 	}
 	for i := 1; i < len(clean); i++ {
@@ -269,9 +266,10 @@ func recommendation(messages []record.MessageRecord, intent string, confidence, 
 
 func secretMatchCount(text string) int {
 	count := len(secretTokenRE.FindAllStringIndex(text, -1))
+	count += len(secretAssignmentRE.FindAllStringIndex(text, -1))
+	count += len(slackWebhookRE.FindAllStringIndex(text, -1))
+	count += len(jwtRE.FindAllStringIndex(text, -1))
 	count += len(privateKeyRE.FindAllStringIndex(text, -1))
-	count += len(emailRE.FindAllStringIndex(text, -1))
-	count += len(privatePathRE.FindAllStringIndex(text, -1))
 	return count
 }
 
@@ -283,7 +281,9 @@ func riskForSecrets(parts []string) float64 {
 	if count == 0 {
 		return 0
 	}
-	return clamp(float64(count) * 0.4)
+	// One or more high-confidence matches should require suppression, but
+	// ordinary paths/emails do not enter this score at all.
+	return clamp(float64(count) * 0.75)
 }
 
 func messageTexts(messages []record.MessageRecord) []string {
