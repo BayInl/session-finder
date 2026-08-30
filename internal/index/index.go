@@ -112,6 +112,8 @@ func Open(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Match Python's single-connection semantics and keep PRAGMA state stable.
+	db.SetMaxOpenConns(1)
 	pragmas := []string{
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 5000",
@@ -665,6 +667,33 @@ func firstNonEmpty(values ...any) any {
 	return nil
 }
 
+func integerValue(value any) int64 {
+	switch value := value.(type) {
+	case nil:
+		return 0
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case float32:
+		return int64(value)
+	case []byte:
+		parsed, _ := strconv.ParseInt(string(value), 10, 64)
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseInt(value, 10, 64)
+		if parsed != 0 {
+			return parsed
+		}
+		floatValue, _ := strconv.ParseFloat(value, 64)
+		return int64(floatValue)
+	default:
+		return integerValue(fmt.Sprint(value))
+	}
+}
+
 func indexOpencode(db *sql.DB, spec record.SourceSpec, mtime float64, size int64) (int, int, error) {
 	source, err := sql.Open("sqlite", dbURI(spec.Path, true))
 	if err != nil {
@@ -676,14 +705,16 @@ func indexOpencode(db *sql.DB, spec record.SourceSpec, mtime float64, size int64
 		return 0, 0, err
 	}
 	current := map[string]int64{}
+	currentOrder := make([]string, 0, 128)
 	for rows.Next() {
 		var id string
-		var updated sql.NullInt64
+		var updated any
 		if err := rows.Scan(&id, &updated); err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
-		current[id] = updated.Int64
+		current[id] = integerValue(updated)
+		currentOrder = append(currentOrder, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -715,15 +746,13 @@ func indexOpencode(db *sql.DB, spec record.SourceSpec, mtime float64, size int64
 			removed = append(removed, id)
 		}
 	}
-	for id, updated := range current {
+	for _, id := range currentOrder {
+		updated := current[id]
 		if old, ok := tracked[id]; !ok || old != updated {
 			changed = append(changed, id)
 		}
 	}
-	// Python preserves SQLite's row iteration order here; sorting provides
-	// deterministic output while session IDs are otherwise unordered.
 	sort.Strings(removed)
-	sort.Strings(changed)
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, 0, err

@@ -1,0 +1,129 @@
+package index
+
+import (
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	_ "modernc.org/sqlite"
+)
+
+func TestInitializeSchemaMigratesLegacyColumnsAndBuildsFTS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE sessions (
+		id INTEGER PRIMARY KEY, tool TEXT NOT NULL, session_id TEXT NOT NULL,
+		cwd TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', created REAL,
+		updated REAL, source_path TEXT NOT NULL
+	);
+	CREATE TABLE messages (
+		id INTEGER PRIMARY KEY, session_pk INTEGER NOT NULL,
+		role TEXT NOT NULL, ts REAL, text TEXT NOT NULL
+	);
+	CREATE TABLE sources (
+		source_path TEXT PRIMARY KEY, tool TEXT NOT NULL, mtime REAL NOT NULL,
+		size INTEGER NOT NULL, skipped INTEGER NOT NULL DEFAULT 0
+	);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	columns, err := tableColumns(db, "sources")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if columns["skipped"] {
+		t.Fatal("legacy sources.skipped column still present")
+	}
+	columns, err = tableColumns(db, "sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !columns["mtime"] || !columns["size"] {
+		t.Fatalf("missing migrated session columns: %#v", columns)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 's1', '/tmp', 'title', 1704067200, 1704067200, '/tmp/s1.jsonl');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067201, 'alpha needle');`); err != nil {
+		t.Fatal(err)
+	}
+	var ftsCount, triCount int
+	if err := db.QueryRow(`SELECT count(*) FROM messages_fts_docsize`).Scan(&ftsCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM messages_tri_docsize`).Scan(&triCount); err != nil {
+		t.Fatal(err)
+	}
+	if ftsCount != 1 || triCount != 1 {
+		t.Fatalf("FTS docsize counts = %d/%d, want 1/1", ftsCount, triCount)
+	}
+}
+
+func TestSearchAndShow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'session-1', '/workspace/project', 'Question', 1704067200, 1704067300, '/source/one');
+	INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067201, 'find alpha here');
+	INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'assistant', 1704067202, 'alpha answer');
+	INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'system', 1704067203, '<system-reminder>alpha hidden');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := Search(db, "alpha", "", "project", "2024-01-01", 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SessionID != "session-1" || results[0].MessageCount != 2 {
+		t.Fatalf("unexpected search results: %#v", results)
+	}
+	if len(results[0].Snippets) != 2 {
+		t.Fatalf("snippets = %#v, want two visible messages", results[0].Snippets)
+	}
+	allResults, err := Search(db, "alpha", "", "", "", 20, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allResults) != 1 || allResults[0].MessageCount != 3 {
+		t.Fatalf("--all search results: %#v", allResults)
+	}
+	rows, err := Show(db, "session-", "user", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ShowRow{{Tool: "codex", SessionID: "session-1", Title: "Question", CWD: "/workspace/project", Created: "2024-01-01T00:00:00Z", Updated: "2024-01-01T00:01:40Z", Role: "user", Timestamp: "2024-01-01T00:00:01Z", Text: "find alpha here"}}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("show rows = %#v, want %#v", rows, want)
+	}
+}
+
+func TestTimestampParsing(t *testing.T) {
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{"2024-01-02 03:04:05", "2024-01-02T03:04:05Z"},
+		{"2024-01-02T03:04:05+0800", "2024-01-01T19:04:05Z"},
+		{"2024-01-02", "2024-01-02T00:00:00Z"},
+		{1704067200, "2024-01-01T00:00:00Z"},
+		{nil, "-"},
+	}
+	for _, tc := range cases {
+		if got := FormatTimestamp(tc.value); got != tc.want {
+			t.Errorf("FormatTimestamp(%#v) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
