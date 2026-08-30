@@ -24,6 +24,7 @@ const (
 
 var (
 	acceptanceEvidenceRE       = regexp.MustCompile(`(?i)\b(yes|yep|yeah|correct|right|looks good|good|great|perfect|thanks|thank you|works|working|approved|accept|ship it|done)\b|可以|正确|对的|很好|完美|谢谢|通过|批准|发布|搞定|没问题`)
+	injectedNoiseRE            = regexp.MustCompile(`(?is)^\s*(?:<environment_context\b|<cwd\b|<system(?:-reminder)?\b|<user_info\b|<permissions(?:\s+instructions)?\b|\[system(?:-reminder)?\]|\[environment_context\b|(?:#+\s*)?agents\.md\b|(?:#+\s*)?context\s+from\s+my\s+ide\s+setup\b|#+\s+(?:skills|available\s+skills)\b|(?:you must|must follow|do not|don't|never)\b)`)
 	testSuccessEvidenceRE      = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*\b(?:pass|passed|ok|success|successful|green)\b)|(?:\b(?:all tests?|tests?)\b[^\n]*(?:pass|passed|ok|success|successful|green)\b)|(?:测试(?:全部|都)?通过)|(?:\b0\s+(?:failures?|failed)\b)|(?m)^\s*(?:ok|PASS)\b`)
 	secretTokenEvidenceRE      = regexp.MustCompile(`(?i)\b(?:sk|pk|rk)[_-][A-Za-z0-9][A-Za-z0-9_-]{8,}\b|\b(?:ghp|github_pat|xox[baprs]|glpat)[_-][A-Za-z0-9][A-Za-z0-9_-]{8,}\b|\bAKIA[0-9A-Z]{16}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{16,}`)
 	secretAssignmentEvidenceRE = regexp.MustCompile(`(?i)\b[A-Za-z0-9_]*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&,;]+)`)
@@ -112,7 +113,7 @@ func evidenceForMessages(messages []record.MessageRecord) []EvidenceBlock {
 	seen := map[string]bool{}
 	for i, message := range messages {
 		text := strings.TrimSpace(message.Text)
-		if text == "" || strings.EqualFold(message.Role, "system") {
+		if text == "" || strings.EqualFold(message.Role, "system") || isInjectedNoiseText(text) {
 			continue
 		}
 		kinds := make([]string, 0, 2)
@@ -142,6 +143,12 @@ func evidenceForMessages(messages []record.MessageRecord) []EvidenceBlock {
 		}
 	}
 	return result
+}
+
+// isInjectedNoiseText identifies common system/environment/AGENTS.md blocks
+// that should not influence skill metadata or instructions.
+func isInjectedNoiseText(text string) bool {
+	return injectedNoiseRE.MatchString(strings.TrimSpace(text))
 }
 
 // SensitiveInformation reports whether text contains a high-confidence secret.
@@ -206,7 +213,7 @@ func cleanInstructionText(text string) string {
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "<system") || strings.HasPrefix(line, "[system") {
+		if line == "" || isInjectedNoiseText(line) || strings.HasPrefix(line, "<system") || strings.HasPrefix(line, "[system") {
 			continue
 		}
 		result = append(result, line)
@@ -216,7 +223,7 @@ func cleanInstructionText(text string) string {
 
 func firstUserMessage(messages []record.MessageRecord) (record.MessageRecord, bool) {
 	for _, message := range messages {
-		if strings.EqualFold(strings.TrimSpace(message.Role), "user") && strings.TrimSpace(message.Text) != "" {
+		if strings.EqualFold(strings.TrimSpace(message.Role), "user") && strings.TrimSpace(message.Text) != "" && !isInjectedNoiseText(message.Text) {
 			return message, true
 		}
 	}

@@ -26,7 +26,7 @@ const (
 func BuildCandidate(messages []record.MessageRecord) (CandidateBundle, error) {
 	clean := make([]record.MessageRecord, 0, len(messages))
 	for _, message := range messages {
-		if strings.TrimSpace(message.Text) == "" || strings.EqualFold(strings.TrimSpace(message.Role), "system") {
+		if strings.TrimSpace(message.Text) == "" || strings.EqualFold(strings.TrimSpace(message.Role), "system") || isInjectedNoiseText(message.Text) {
 			continue
 		}
 		message.Role = strings.ToLower(strings.TrimSpace(message.Role))
@@ -49,8 +49,8 @@ func BuildCandidate(messages []record.MessageRecord) (CandidateBundle, error) {
 	first, hasFirst := firstUserMessage(clean)
 	title := ""
 	for _, message := range clean {
-		if strings.TrimSpace(message.Title) != "" {
-			title = strings.TrimSpace(message.Title)
+		if titleText := strings.TrimSpace(message.Title); titleText != "" && !isInjectedNoiseText(titleText) {
+			title = titleText
 			break
 		}
 	}
@@ -190,6 +190,60 @@ func ExtractCandidate(ctx context.Context, store *extract.Store, messages []reco
 	return ExtractAndPersist(ctx, store, messages, actor)
 }
 
+// persistSkippedSession records a session that contains only filtered/system
+// records. Marking it failed prevents every compensation scan from retrying the
+// same unusable transcript while preserving an auditable reason for review.
+func persistSkippedSession(ctx context.Context, store *extract.Store, session PendingSession, actor string) (extract.Candidate, error) {
+	if store == nil {
+		return extract.Candidate{}, errors.New("nil candidate store")
+	}
+	if actor == "" {
+		actor = defaultActor
+	}
+	slug := slugify("empty-session-" + session.SessionID)
+	if slug == "" {
+		slug = "empty-session"
+	}
+	if len(slug) > 64 {
+		slug = strings.Trim(slug[:64], "-")
+	}
+	bundle := CandidateBundle{
+		Slug:         slug,
+		Trigger:      "",
+		Instructions: "",
+		Evidence:     []EvidenceBlock{},
+		Quality:      EvaluateQuality(extract.Analyze(nil)),
+		Risks:        []string{"empty transcript"},
+		Conflicts:    []string{},
+		SessionID:    session.SessionID,
+		Tool:         session.Tool,
+		Title:        session.Title,
+		CWD:          session.CWD,
+		SourcePath:   session.SourcePath,
+	}
+	payload, err := CandidatePayload(bundle)
+	if err != nil {
+		return extract.Candidate{}, err
+	}
+	return store.Create(ctx, extract.CandidateInput{
+		SessionID:         session.SessionID,
+		Tool:              session.Tool,
+		SourcePath:        session.SourcePath,
+		Kind:              defaultCandidateKind,
+		Title:             session.Title,
+		Summary:           "empty transcript",
+		Payload:           payload,
+		Status:            extract.StatusFailed,
+		Actor:             actor,
+		Reason:            "empty transcript after noise filtering",
+		Confidence:        0,
+		SuccessEvidence:   []string{},
+		OneOffRisk:        1,
+		SecretRisk:        0,
+		RecommendedAction: extract.ActionSuppress,
+	})
+}
+
 // IndexSessionMessages loads one session's normalized messages from the local
 // index. The session argument accepts a complete ID or a unique prefix.
 func IndexSessionMessages(ctx context.Context, db *sql.DB, sessionID, cwd, after string) ([]record.MessageRecord, error) {
@@ -282,6 +336,10 @@ func PendingSessions(ctx context.Context, indexDBPath, candidateDBPath string, o
 		return nil, err
 	}
 	defer store.Close()
+	// IncludeDeleted keeps recoverably deleted candidates in the seen set. A
+	// deletion does not mean the source session should be regenerated; callers
+	// should restore and review the existing candidate instead of relying on
+	// pending scans to create duplicates.
 	queued, err := store.List(ctx, extract.ListOptions{Kind: defaultCandidateKind, IncludeDeleted: true})
 	if err != nil {
 		return nil, err
@@ -385,9 +443,22 @@ func ExtractPending(ctx context.Context, options ExtractOptions) ([]PendingSessi
 			return pending, created, loadErr
 		}
 		if len(messages) == 0 {
+			candidate, skipErr := persistSkippedSession(ctx, store, session, options.Actor)
+			if skipErr != nil {
+				return pending, created, skipErr
+			}
+			created = append(created, candidate)
 			continue
 		}
 		_, candidate, createErr := ExtractAndPersist(ctx, store, messages, options.Actor)
+		if errors.Is(createErr, ErrNoTranscript) {
+			candidate, skipErr := persistSkippedSession(ctx, store, session, options.Actor)
+			if skipErr != nil {
+				return pending, created, skipErr
+			}
+			created = append(created, candidate)
+			continue
+		}
 		if createErr != nil {
 			return pending, created, createErr
 		}

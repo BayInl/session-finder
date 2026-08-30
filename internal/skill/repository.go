@@ -210,11 +210,13 @@ func (r *Repository) Review(ctx context.Context, id string, request ReviewReques
 	if err := validateReviewedBundle(bundle, request.Action); err != nil {
 		return ReviewResult{}, err
 	}
-	updated, err := r.updateBundle(ctx, candidate, bundle, defaultActor, "review "+request.Action)
-	if err != nil {
-		return ReviewResult{}, err
+	if request.EvidenceID != "" || request.Action == ReviewEdit {
+		updated, err := r.updateBundle(ctx, candidate, bundle, defaultActor, "review "+request.Action)
+		if err != nil {
+			return ReviewResult{}, err
+		}
+		candidate = updated
 	}
-	candidate = updated
 	target := ""
 	switch request.Action {
 	case ReviewApprove:
@@ -278,14 +280,16 @@ func (r *Repository) transitionToReviewStatus(ctx context.Context, candidate ext
 		return candidate, nil
 	}
 	var err error
-	if candidate.Status == extract.StatusDetected {
+	if candidate.Status == extract.StatusDetected || candidate.Status == extract.StatusRejected {
+		// rejected -> draft is the only state-machine edge back into the
+		// reviewable path. Do not attempt the nonexistent rejected -> in_review
+		// transition; suppressed candidates must remain manually recoverable.
 		candidate, err = r.Transition(ctx, candidate.ID, extract.StatusDraft, actor, "prepare review")
 		if err != nil {
 			return extract.Candidate{}, err
 		}
 	}
-	if candidate.Status == extract.StatusDraft || candidate.Status == extract.StatusRejected ||
-		candidate.Status == extract.StatusDeferred || candidate.Status == extract.StatusFailed {
+	if candidate.Status == extract.StatusDraft || candidate.Status == extract.StatusDeferred || candidate.Status == extract.StatusFailed {
 		candidate, err = r.Transition(ctx, candidate.ID, extract.StatusInReview, actor, "open review")
 		if err != nil {
 			return extract.Candidate{}, err
@@ -393,12 +397,28 @@ func PublishCandidate(ctx context.Context, path, id string, options PublishOptio
 	if candidate.Status != extract.StatusApproved {
 		return PublishResult{}, fmt.Errorf("%w: candidate status %q must be approved", extract.ErrInvalidTransition, candidate.Status)
 	}
+	return publishAndTransition(bundle, options, func(publishedPath string) error {
+		_, err := repository.Transition(ctx, id, extract.StatusPublished, defaultActor, "published "+publishedPath)
+		return err
+	})
+}
+
+// publishAndTransition removes the newly written skill when recording its
+// published state fails, so retrying cannot be blocked by an orphan directory.
+func publishAndTransition(bundle CandidateBundle, options PublishOptions, transition func(string) error) (PublishResult, error) {
 	result, err := Publish(bundle, options)
 	if err != nil {
 		return result, err
 	}
-	if _, err := repository.Transition(ctx, id, extract.StatusPublished, defaultActor, "published "+result.Path); err != nil {
-		return PublishResult{}, err
+	if transition == nil {
+		_ = os.RemoveAll(result.Path)
+		return PublishResult{}, errors.New("nil publish transition")
+	}
+	if transitionErr := transition(result.Path); transitionErr != nil {
+		if cleanupErr := os.RemoveAll(result.Path); cleanupErr != nil {
+			return PublishResult{}, fmt.Errorf("publish transition failed: %w; cleanup failed: %v", transitionErr, cleanupErr)
+		}
+		return PublishResult{}, transitionErr
 	}
 	return result, nil
 }
@@ -487,14 +507,26 @@ func (r *Repository) updateBundle(ctx context.Context, candidate extract.Candida
 		return extract.Candidate{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	successEvidence := append([]string{}, bundle.Quality.Signals.SuccessEvidence...)
+	successEvidenceJSON, err := json.Marshal(successEvidence)
+	if err != nil {
+		return rollback(err)
+	}
 	updated := candidate
 	updated.Title = bundle.Title
 	updated.Summary = bundle.Trigger
+	updated.Confidence = bundle.Quality.Signals.Confidence
+	updated.SuccessEvidence = successEvidence
+	updated.OneOffRisk = bundle.Quality.Signals.OneOffRisk
+	updated.SecretRisk = bundle.Quality.Signals.SecretRisk
+	updated.RecommendedAction = bundle.Quality.Signals.RecommendedAction
 	updated.Payload = json.RawMessage(payload)
 	updated.UpdatedAt = now
 	updated.Version++
-	result, err := tx.ExecContext(ctx, `UPDATE candidates SET title = ?, summary = ?, payload = ?, updated_at = ?, version = ? WHERE id = ? AND version = ?`,
-		updated.Title, updated.Summary, string(updated.Payload), updated.UpdatedAt, updated.Version, updated.ID, candidate.Version)
+	result, err := tx.ExecContext(ctx, `UPDATE candidates SET title = ?, summary = ?, confidence = ?, success_evidence = ?, one_off_risk = ?, secret_risk = ?, recommended_action = ?, payload = ?, updated_at = ?, version = ? WHERE id = ? AND version = ?`,
+		updated.Title, updated.Summary, updated.Confidence, string(successEvidenceJSON), updated.OneOffRisk,
+		updated.SecretRisk, updated.RecommendedAction, string(updated.Payload), updated.UpdatedAt,
+		updated.Version, updated.ID, candidate.Version)
 	if err != nil {
 		return rollback(err)
 	}

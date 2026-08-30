@@ -249,11 +249,6 @@ func Publish(bundle CandidateBundle, options PublishOptions) (PublishResult, err
 		}
 		return PublishResult{}, err
 	}
-	defer func() {
-		if err != nil {
-			_ = os.RemoveAll(destination)
-		}
-	}()
 	filePath := filepath.Join(destination, "SKILL.md")
 	if err := atomicWriteFile(filePath, []byte(markdown), 0o644); err != nil {
 		_ = os.RemoveAll(destination)

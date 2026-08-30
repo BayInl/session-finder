@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/BayInl/session-finder/internal/extract"
+	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
 )
 
@@ -51,6 +52,28 @@ func TestBuildCandidateUsesExtractSignalsAndEvidencePointers(t *testing.T) {
 	}
 	if strings.Contains(bundle.Instructions, "Looks good") {
 		t.Fatalf("instructions unexpectedly contain reviewer evidence: %q", bundle.Instructions)
+	}
+}
+
+func TestBuildCandidateFiltersInjectedMetadata(t *testing.T) {
+	messages := []record.MessageRecord{
+		{Tool: "codex", SessionID: "noise", Title: "# AGENTS.md instructions for /Users/test", Role: "user", Text: "# Context from my IDE setup:\n<environment_context>hidden</environment_context>"},
+		{Tool: "codex", SessionID: "noise", Title: "# AGENTS.md instructions for /Users/test", Role: "user", Text: "Document the release workflow."},
+		{Tool: "codex", SessionID: "noise", Title: "# AGENTS.md instructions for /Users/test", Role: "assistant", Text: "Run go test ./...; then build the release artifact."},
+		{Tool: "codex", SessionID: "noise", Title: "# AGENTS.md instructions for /Users/test", Role: "user", Text: "go test ./... passed; looks good."},
+	}
+	bundle, err := BuildCandidate(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(bundle.Slug, "agents") || strings.Contains(bundle.Slug, "environment") {
+		t.Fatalf("injected title entered slug: %q", bundle.Slug)
+	}
+	if strings.Contains(bundle.Trigger, "environment") || strings.Contains(bundle.Trigger, "AGENTS") {
+		t.Fatalf("injected text entered trigger: %q", bundle.Trigger)
+	}
+	if strings.Contains(bundle.Instructions, "Context from my IDE") || strings.Contains(bundle.Instructions, "AGENTS.md") {
+		t.Fatalf("injected text entered instructions: %q", bundle.Instructions)
 	}
 }
 
@@ -177,5 +200,159 @@ func TestRepositoryReviewPersistsEdit(t *testing.T) {
 	}
 	if reloaded.Version <= candidate.Version || bundle.Trigger != result.Bundle.Trigger {
 		t.Fatalf("reloaded candidate=%+v bundle=%+v", reloaded, bundle)
+	}
+}
+
+func TestExtractPendingSkipsEmptySessionsAndContinues(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "index.db")
+	candidatePath := filepath.Join(root, "candidates.db")
+	db, err := index.Open(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.InitializeSchema(db); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('grok', 'empty-session', '/tmp/empty', 'Empty', 1704067200, 1704067200, '/tmp/empty.jsonl');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'system', 1704067201, '<environment_context>hidden</environment_context>');
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'normal-session', '/tmp/normal', 'Normal', 1704067100, 1704067100, '/tmp/normal.jsonl');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'user', 1704067101, 'Document the release workflow.');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'assistant', 1704067102, 'Run go test ./...; then build the artifact.');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'user', 1704067103, 'Looks good, go test ./... passed.');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, created, err := ExtractPending(context.Background(), ExtractOptions{IndexDBPath: indexPath, CandidateDBPath: candidatePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 || len(created) != 2 {
+		t.Fatalf("pending=%d created=%d, want both sessions processed", len(pending), len(created))
+	}
+	statuses := map[string]string{}
+	for _, candidate := range created {
+		statuses[candidate.SessionID] = candidate.Status
+	}
+	if statuses["empty-session"] != extract.StatusFailed || statuses["normal-session"] != extract.StatusDraft {
+		t.Fatalf("created statuses = %#v", statuses)
+	}
+	pending, created, err = ExtractPending(context.Background(), ExtractOptions{IndexDBPath: indexPath, CandidateDBPath: candidatePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 || len(created) != 0 {
+		t.Fatalf("second scan pending=%d created=%d, want no duplicates", len(pending), len(created))
+	}
+}
+
+func TestRejectedCandidateCanReturnToReview(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "candidates.db")
+	repository, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	candidate, err := repository.CreateBundle(context.Background(), publishableBundle(), "test", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := repository.Review(context.Background(), candidate.ID, ReviewRequest{Action: ReviewReject}); err != nil {
+		t.Fatal(err)
+	} else if result.Candidate.Status != extract.StatusRejected {
+		t.Fatalf("rejected status = %q", result.Candidate.Status)
+	}
+	result, err := repository.Review(context.Background(), candidate.ID, ReviewRequest{Action: ReviewApprove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Candidate.Status != extract.StatusApproved {
+		t.Fatalf("recovered status = %q, want approved", result.Candidate.Status)
+	}
+	events, err := repository.CandidateStore().Events(context.Background(), candidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 6 {
+		t.Fatalf("events = %+v, want create plus five state transitions", events)
+	}
+}
+
+func TestReviewEditSynchronizesCandidateMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "candidates.db")
+	repository, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	bundle := publishableBundle()
+	bundle.Quality.Signals = extract.SignalBundle{
+		Confidence: 0.63, SuccessEvidence: []string{extract.EvidenceTestsPassed},
+		OneOffRisk: 0.21, SecretRisk: 0.04, RecommendedAction: extract.ActionReview,
+	}
+	candidate, err := repository.CreateBundle(context.Background(), bundle, "test", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.db.Exec(`UPDATE candidates SET confidence = 0.01, success_evidence = '[]', one_off_risk = 0.99, secret_risk = 0.99, recommended_action = 'stale' WHERE id = ?`, candidate.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Review(context.Background(), candidate.ID, ReviewRequest{Action: ReviewEdit, Trigger: "Use for release preparation."}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := repository.Get(context.Background(), candidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Confidence != 0.63 || reloaded.OneOffRisk != 0.21 || reloaded.SecretRisk != 0.04 || reloaded.RecommendedAction != extract.ActionReview || len(reloaded.SuccessEvidence) != 1 || reloaded.SuccessEvidence[0] != extract.EvidenceTestsPassed {
+		t.Fatalf("metadata = %+v", reloaded)
+	}
+}
+
+func TestReviewApproveDoesNotWriteRedundantBundleEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "candidates.db")
+	repository, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	candidate, err := repository.CreateBundle(context.Background(), publishableBundle(), "test", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Review(context.Background(), candidate.ID, ReviewRequest{Action: ReviewApprove}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := repository.CandidateStore().Events(context.Background(), candidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want create, open review, approve", events)
+	}
+	if events[1].Reason != "open review" || events[2].Reason != "review approve" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestPublishAndTransitionCleansDirectoryOnTransitionFailure(t *testing.T) {
+	root := t.TempDir()
+	transitionErr := errors.New("transition failed")
+	_, err := publishAndTransition(publishableBundle(), PublishOptions{Target: TargetGeneric, SkillsRoot: root}, func(string) error {
+		return transitionErr
+	})
+	if !errors.Is(err, transitionErr) {
+		t.Fatalf("error = %v, want transition error", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, publishableBundle().Slug)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("published directory stat error = %v, want not exist", err)
 	}
 }
