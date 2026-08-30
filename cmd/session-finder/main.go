@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -109,11 +110,14 @@ func runSearch(argv []string) error {
 			Count   int                  `json:"count"`
 			Results []index.SearchResult `json:"results"`
 		}{Query: query, Count: len(results), Results: results}
-		encoded, err := json.MarshalIndent(payload, "", "  ")
-		if err != nil {
+		var output bytes.Buffer
+		encoder := json.NewEncoder(&output)
+		encoder.SetEscapeHTML(false)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(payload); err != nil {
 			return err
 		}
-		fmt.Println(string(encoded))
+		fmt.Print(output.String())
 		return nil
 	}
 	printSearchResults(query, results)
