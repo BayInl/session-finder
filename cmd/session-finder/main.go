@@ -25,23 +25,15 @@ func run(argv []string) error {
 	if len(argv) == 0 {
 		return usageError("missing command")
 	}
-	switch argv[0] {
-	case "index":
-		return runIndex(argv[1:])
-	case "search":
-		return runSearch(argv[1:])
-	case "show":
-		return runShow(argv[1:])
-	case "-h", "--help":
+	if argv[0] == "-h" || argv[0] == "--help" {
 		printRootUsage()
 		return nil
-	default:
-		return usageError("unknown command: " + argv[0])
 	}
+	return runRegistered(argv[0], argv[1:])
 }
 
 func printRootUsage() {
-	fmt.Println("usage: session-finder <index|search|show> [flags]")
+	fmt.Println(rootUsage() + " [flags]")
 	fmt.Println("Search local AI sessions from opencode, Grok, Codex, Kimi Code, and Claude.")
 }
 
