@@ -202,15 +202,15 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     if "skipped" in source_columns:
         _remove_sources_skipped_column(connection)
 
-    # Backfill either external-content FTS index when it is missing or lags
-    # behind messages (for example, an index created by an older release).
+    # External-content FTS5 tables serve count(*) from the content table, so
+    # compare against each index's shadow docsize table to detect lagging rows.
     messages_count = connection.execute("SELECT count(*) FROM messages").fetchone()[0]
-    fts_count = connection.execute("SELECT count(*) FROM messages_fts").fetchone()[0]
-    if fts_count != messages_count:
-        connection.execute("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')")
-    tri_count = connection.execute("SELECT count(*) FROM messages_tri").fetchone()[0]
-    if tri_count != messages_count:
-        connection.execute("INSERT INTO messages_tri(messages_tri) VALUES ('rebuild')")
+    for table in ("messages_fts", "messages_tri"):
+        indexed_count = connection.execute(
+            f"SELECT count(*) FROM {table}_docsize"
+        ).fetchone()[0]
+        if indexed_count != messages_count:
+            connection.execute(f"INSERT INTO {table}({table}) VALUES ('rebuild')")
     connection.commit()
 
 
