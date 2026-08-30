@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
@@ -52,6 +53,9 @@ func runIndex(argv []string) error {
 	set.SetOutput(os.Stderr)
 	full := set.Bool("full", false, "rebuild the index from scratch")
 	if err := set.Parse(argv); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if set.NArg() != 0 {
@@ -74,9 +78,12 @@ func runSearch(argv []string) error {
 	limit := set.Int("limit", 20, "maximum sessions to show")
 	asJSON := set.Bool("json", false, "emit JSON")
 	includeSystem := set.Bool("all", false, "include system/noise records (default hides them)")
-	query, err := parseFlagsAndArg(set, argv, "search")
+	query, helpRequested, err := parseFlagsAndArg(set, argv, "search")
 	if err != nil {
 		return err
+	}
+	if helpRequested {
+		return nil
 	}
 	if query == "" {
 		return usageError("search requires exactly one query")
@@ -118,9 +125,12 @@ func runShow(argv []string) error {
 	set.SetOutput(os.Stderr)
 	role := set.String("role", "", "filter by role (user, assistant, or system)")
 	limit := set.Int("limit", 0, "maximum messages to show")
-	arg, err := parseFlagsAndArg(set, argv, "show")
+	arg, helpRequested, err := parseFlagsAndArg(set, argv, "show")
 	if err != nil {
 		return err
+	}
+	if helpRequested {
+		return nil
 	}
 	if arg == "" {
 		return usageError("show requires exactly one session ID or prefix")
@@ -128,7 +138,13 @@ func runShow(argv []string) error {
 	if *role != "" && *role != "user" && *role != "assistant" && *role != "system" {
 		return usageError("role must be one of: user, assistant, system")
 	}
-	if *limit < 0 {
+	limitSet := false
+	set.Visit(func(f *flag.Flag) {
+		if f.Name == "limit" {
+			limitSet = true
+		}
+	})
+	if limitSet && *limit <= 0 {
 		return usageError("--limit must be positive")
 	}
 	db, err := index.Open("")
@@ -147,7 +163,7 @@ func runShow(argv []string) error {
 	return nil
 }
 
-func parseFlagsAndArg(set *flag.FlagSet, argv []string, command string) (string, error) {
+func parseFlagsAndArg(set *flag.FlagSet, argv []string, command string) (string, bool, error) {
 	// Python argparse accepts options both before and after the positional
 	// argument. Go's standard flag package stops at the first positional, so
 	// parse a reordered copy and return the sole positional argument.
@@ -172,14 +188,14 @@ func parseFlagsAndArg(set *flag.FlagSet, argv []string, command string) (string,
 	}
 	if err := set.Parse(flags); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return "", nil
+			return "", true, nil
 		}
-		return "", err
+		return "", false, err
 	}
 	if len(positionals) != 1 {
-		return "", usageError(command + " requires exactly one positional argument")
+		return "", false, usageError(command + " requires exactly one positional argument")
 	}
-	return positionals[0], nil
+	return positionals[0], false, nil
 }
 
 func printIndexSummary(summary index.Summary) {
@@ -192,7 +208,7 @@ func printIndexSummary(summary index.Summary) {
 }
 
 func printSearchResults(query string, results []index.SearchResult) {
-	fmt.Printf("search: %q (%d sessions)\n", query, len(results))
+	fmt.Printf("search: %s (%d sessions)\n", pythonStyleRepr(query), len(results))
 	if len(results) == 0 {
 		fmt.Println("No matches.")
 		return
@@ -209,6 +225,51 @@ func printSearchResults(query string, results []index.SearchResult) {
 		for _, snippet := range result.Snippets {
 			fmt.Printf("   snippet: %s\n", snippet)
 		}
+	}
+}
+
+func pythonStyleRepr(value string) string {
+	quote := byte('\'')
+	if strings.Contains(value, "'") && !strings.Contains(value, `"`) {
+		quote = '"'
+	}
+
+	var result strings.Builder
+	result.Grow(len(value) + 2)
+	result.WriteByte(quote)
+	for _, char := range value {
+		switch char {
+		case '\\':
+			result.WriteString(`\\`)
+		case '\n':
+			result.WriteString(`\n`)
+		case '\r':
+			result.WriteString(`\r`)
+		case '\t':
+			result.WriteString(`\t`)
+		case rune(quote):
+			result.WriteByte('\\')
+			result.WriteRune(char)
+		default:
+			if unicode.IsPrint(char) {
+				result.WriteRune(char)
+			} else {
+				writeUnicodeEscape(&result, char)
+			}
+		}
+	}
+	result.WriteByte(quote)
+	return result.String()
+}
+
+func writeUnicodeEscape(result *strings.Builder, char rune) {
+	switch {
+	case char <= 0xff:
+		fmt.Fprintf(result, `\x%02x`, char)
+	case char <= 0xffff:
+		fmt.Fprintf(result, `\u%04x`, char)
+	default:
+		fmt.Fprintf(result, `\U%08x`, char)
 	}
 }
 
