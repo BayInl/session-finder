@@ -178,6 +178,51 @@ func TestSessionEndHookExitsWhenBinaryMissing(t *testing.T) {
 	}
 }
 
+func TestSessionEndHookRunsExtraction(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	script := filepath.Join(filepath.Dir(filename), "..", "..", "hooks", "session-end.sh")
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "invoked")
+	fake := filepath.Join(bin, "session-finder")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s' \"$*\" > \"$HOOK_MARKER\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", script)
+	cmd.Env = append(os.Environ(),
+		"TMPDIR="+root,
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HOOK_MARKER="+marker,
+	)
+	cmd.Stdin = strings.NewReader(`{"session_id":"ignored"}`)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("session-end hook error = %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			if string(data) != "skill extract --pending" {
+				t.Fatalf("session-end hook arguments = %q", data)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read extraction marker: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("session-end hook did not run extraction")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestHookLockReclaimsStaleOwner(t *testing.T) {
 	root := t.TempDir()
 	fakeBin := filepath.Join(root, "bin")

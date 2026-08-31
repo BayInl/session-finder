@@ -30,14 +30,14 @@ nohup sh -c '
         reclaim_stale_lock || exit 0
       else
         case "$holder_pid" in
-          *[!0-9]*|'') reclaim_stale_lock || exit 0 ;;
+          *[!0-9]*|"") reclaim_stale_lock || exit 0 ;;
         esac
         [ "$holder_pid" -gt 0 ] 2>/dev/null || exit 0
         if kill -0 "$holder_pid" 2>/dev/null; then
           exit 0
         fi
         case "$holder_started" in
-          *[!0-9]*|'') reclaim_stale_lock || exit 0 ;;
+          *[!0-9]*|"") reclaim_stale_lock || exit 0 ;;
         esac
         [ "$now" -ge "$holder_started" ] 2>/dev/null || exit 0
         [ "$((now - holder_started))" -ge "$lock_ttl" ] 2>/dev/null || exit 0
