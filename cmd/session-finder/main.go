@@ -6,12 +6,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"unicode"
 
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
+)
+
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
 )
 
 func main() {
@@ -29,7 +36,26 @@ func run(argv []string) error {
 		printRootUsage()
 		return nil
 	}
+	if argv[0] == "-v" || argv[0] == "--version" {
+		if len(argv) != 1 {
+			return usageError(argv[0] + " accepts no arguments")
+		}
+		printVersion(os.Stdout)
+		return nil
+	}
 	return runRegistered(argv[0], argv[1:])
+}
+
+func runVersion(argv []string) error {
+	if len(argv) != 0 {
+		return usageError("version accepts no arguments")
+	}
+	printVersion(os.Stdout)
+	return nil
+}
+
+func printVersion(writer io.Writer) {
+	fmt.Fprintf(writer, "session-finder version %s\ncommit: %s\ndate: %s\n", version, commit, date)
 }
 
 func printRootUsage() {

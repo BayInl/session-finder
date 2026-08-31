@@ -20,9 +20,11 @@ func RegisterCommand(name string, run commandHandler) { commandregistry.Register
 func Commands() []string { return commandregistry.Names() }
 
 func init() {
+	RegisterCommand("hooks", runHooks)
 	RegisterCommand("index", runIndex)
 	RegisterCommand("search", runSearch)
 	RegisterCommand("show", runShow)
+	RegisterCommand("version", runVersion)
 	decisions.RegisterCommand()
 }
 
