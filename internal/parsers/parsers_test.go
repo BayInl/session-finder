@@ -149,6 +149,48 @@ func TestKimiRecords(t *testing.T) {
 	}
 }
 
+func TestKimiLoopEvents(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "session_fixture", "agents", "agent_a", "wire.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("testdata", "kimi_wire.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	records := collect(t, func(emit Emit) error { return Kimi(path, emit) })
+	if len(records) != 6 {
+		t.Fatalf("got %d Kimi records, want 6: %+v", len(records), records)
+	}
+	roles := []string{records[0].Role, records[1].Role, records[2].Role, records[3].Role, records[4].Role, records[5].Role}
+	if want := []string{"user", "system", "assistant", "assistant", "assistant", "assistant"}; !reflect.DeepEqual(roles, want) {
+		t.Fatalf("roles = %#v, want %#v", roles, want)
+	}
+	texts := []string{records[0].Text, records[1].Text, records[2].Text, records[3].Text, records[4].Text, records[5].Text}
+	wantTexts := []string{
+		"Workspace Path: /fixture/kimi\n用户问题",
+		"系统注入",
+		"我会先检查项目结构。",
+		`tool.call Bash {"command":"pwd","timeout":30}`,
+		`tool.result call_fixture_1 {"isError":true,"output":"permission denied","truncated":true}`,
+		"最后回答。",
+	}
+	if !reflect.DeepEqual(texts, wantTexts) {
+		t.Fatalf("texts = %#v, want %#v", texts, wantTexts)
+	}
+	if records[0].SessionID != "session_fixture" || records[0].CWD != "/fixture/kimi" || records[0].SourcePath != path {
+		t.Fatalf("unexpected Kimi metadata: %+v", records[0])
+	}
+	if records[0].Timestamp != "2024-01-02T00:00:00Z" || records[2].Timestamp != float64(1704153603000) {
+		t.Fatalf("unexpected Kimi timestamps: %#v, %#v", records[0].Timestamp, records[2].Timestamp)
+	}
+}
+
 func TestClaudeRecords(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "project", "transcript.jsonl")

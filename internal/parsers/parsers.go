@@ -26,7 +26,7 @@ var (
 	uuidRE       = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 	workspaceRE  = regexp.MustCompile(`(?:Workspace Path|工作区路径):\s*(.+)`)
 	codexJSONLRE = regexp.MustCompile(`"type"\s*:\s*"(?:message|session_meta)"`)
-	kimiJSONLRE  = regexp.MustCompile(`"type"\s*:\s*"context\.append_message"`)
+	kimiJSONLRE  = regexp.MustCompile(`"type"\s*:\s*"context\.append_(?:message|loop_event)"`)
 )
 
 // Emit receives one normalized message. Returning an error stops parsing.
@@ -502,40 +502,91 @@ func kimiWorkspacePath(value map[string]any, text string) string {
 	return ""
 }
 
-// Kimi streams context.append_message records from a Kimi wire file.
+// Kimi streams context messages and loop events from a Kimi wire file.
 func Kimi(wirePath string, emit Emit) error {
 	sessionDir := filepath.Dir(filepath.Dir(filepath.Dir(wirePath)))
 	sessionID := filepath.Base(sessionDir)
 	cwd := ""
-	return eachJSONL(wirePath, kimiJSONLRE, [][]byte{[]byte(`context.append_message`)}, func(value map[string]any) error {
-		if anyString(value["type"]) != "context.append_message" {
-			return nil
-		}
-		message := nestedMap(value["message"])
-		if len(message) == 0 {
-			return nil
-		}
-		text := ExtractText(message["content"])
-		if text == "" {
-			return nil
-		}
-		if candidate := kimiWorkspacePath(message, text); candidate != "" {
-			cwd = candidate
-		}
-		origin := nestedMap(message["origin"])
-		if len(origin) == 0 {
-			origin = nestedMap(value["origin"])
-		}
-		role := message["role"]
-		if anyString(origin["kind"]) == "user" {
-			role = "user"
-		}
-		timestamp := firstNonEmpty(value["time"], message["time"])
-		if result, ok := makeRecord("kimi-code", sessionID, cwd, "", timestamp, role, text, wirePath); ok {
-			return emit(result)
+	return eachJSONL(wirePath, kimiJSONLRE, [][]byte{[]byte(`context.append_message`), []byte(`context.append_loop_event`)}, func(value map[string]any) error {
+		lineType := anyString(value["type"])
+		timestamp := value["time"]
+		switch lineType {
+		case "context.append_message":
+			message := nestedMap(value["message"])
+			if len(message) == 0 {
+				return nil
+			}
+			text := ExtractText(message["content"])
+			if text == "" {
+				return nil
+			}
+			if candidate := kimiWorkspacePath(message, text); candidate != "" {
+				cwd = candidate
+			}
+			origin := nestedMap(message["origin"])
+			if len(origin) == 0 {
+				origin = nestedMap(value["origin"])
+			}
+			role := kimiMessageRole(message["role"], origin["kind"])
+			if result, ok := makeRecord("kimi-code", sessionID, cwd, "", firstNonEmpty(timestamp, message["time"]), role, text, wirePath); ok {
+				return emit(result)
+			}
+		case "context.append_loop_event":
+			event := nestedMap(value["event"])
+			text, ok := kimiLoopEventText(event)
+			if !ok {
+				return nil
+			}
+			if result, ok := makeRecord("kimi-code", sessionID, cwd, "", timestamp, "assistant", text, wirePath); ok {
+				return emit(result)
+			}
 		}
 		return nil
 	})
+}
+
+func kimiMessageRole(role, originKind any) any {
+	if anyString(originKind) == "user" {
+		return "user"
+	}
+	if anyString(originKind) != "" {
+		return "system"
+	}
+	return role
+}
+
+func kimiLoopEventText(event map[string]any) (string, bool) {
+	switch anyString(event["type"]) {
+	case "content.part":
+		part := nestedMap(event["part"])
+		if anyString(part["type"]) != "text" {
+			return "", false
+		}
+		return anyString(part["text"]), true
+	case "tool.call":
+		name := anyString(event["name"])
+		args, err := json.Marshal(event["args"])
+		if err != nil {
+			return "", false
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		return fmt.Sprintf("tool.call %s %s", name, string(args)), true
+	case "tool.result":
+		toolCallID := anyString(event["toolCallId"])
+		result := nestedMap(event["result"])
+		if len(result) == 0 {
+			return "", false
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			return "", false
+		}
+		return fmt.Sprintf("tool.result %s %s", toolCallID, string(data)), true
+	default:
+		return "", false
+	}
 }
 
 // Claude streams user and assistant messages from a Claude transcript.
