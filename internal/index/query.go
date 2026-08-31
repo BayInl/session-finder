@@ -743,6 +743,11 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 	if len(matchedIDs) == 0 {
 		return []SearchResult{}, nil
 	}
+	orderedIDs := make([]int64, 0, len(matchedIDs))
+	for id := range matchedIDs {
+		orderedIDs = append(orderedIDs, id)
+	}
+	sort.Slice(orderedIDs, func(i, j int) bool { return orderedIDs[i] < orderedIDs[j] })
 
 	type searchGroup struct {
 		result SearchResult
@@ -750,7 +755,7 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 	}
 	groups := make(map[string]*searchGroup)
 	order := make([]string, 0)
-	for id := range matchedIDs {
+	for _, id := range orderedIDs {
 		row := universe[id]
 		key := row.tool + "\x00" + row.sessionID
 		group := groups[key]
