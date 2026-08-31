@@ -1,9 +1,15 @@
 package registry
 
-import "testing"
+import (
+	"strconv"
+	"sync/atomic"
+	"testing"
+)
+
+var testCommandID uint64
 
 func TestNamesAndRun(t *testing.T) {
-	name := "test-command-registry"
+	name := "test-command-registry-" + strconv.FormatUint(atomic.AddUint64(&testCommandID, 1), 10)
 	called := false
 	Register(name, func(argv []string) error {
 		called = len(argv) == 1 && argv[0] == "ok"

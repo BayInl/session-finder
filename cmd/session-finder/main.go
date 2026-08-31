@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
@@ -97,7 +100,10 @@ func runSearch(argv []string) error {
 	after := set.String("after", "", "only messages on or after YYYY-MM-DD")
 	limit := set.Int("limit", 20, "maximum sessions to show")
 	asJSON := set.Bool("json", false, "emit JSON")
-	includeSystem := set.Bool("all", false, "include system/noise records (default hides them)")
+	var includeSystem bool
+	set.BoolVar(&includeSystem, "all", false, "include system/noise records (default hides them)")
+	set.BoolVar(&includeSystem, "include-system", false, "alias for --all")
+	verbose := set.Bool("verbose", false, "show full result cards")
 	dbPath := set.String("db", "", "path to the SQLite index database")
 	query, helpRequested, err := parseFlagsAndArg(set, argv, "search")
 	if err != nil {
@@ -120,7 +126,7 @@ func runSearch(argv []string) error {
 	if err := index.InitializeSchema(db); err != nil {
 		return err
 	}
-	results, err := index.Search(db, query, *tool, *cwd, *after, *limit, *includeSystem)
+	results, err := index.Search(db, query, *tool, *cwd, *after, *limit, includeSystem)
 	if err != nil {
 		return err
 	}
@@ -140,7 +146,7 @@ func runSearch(argv []string) error {
 		fmt.Print(output.String())
 		return nil
 	}
-	printSearchResults(query, results)
+	printSearchResults(query, results, *verbose)
 	return nil
 }
 
@@ -232,25 +238,251 @@ func printIndexSummary(summary index.Summary) {
 	fmt.Printf("sources: processed=%d unchanged=%d errors=%d\n", summary.Sources.Processed, summary.Sources.Unchanged, summary.Sources.Errors)
 }
 
-func printSearchResults(query string, results []index.SearchResult) {
-	fmt.Printf("search: %s (%d sessions)\n", pythonStyleRepr(query), len(results))
+// printSearchResults keeps the historical two-argument call usable while
+// accepting an optional verbose switch for the search command.
+func printSearchResults(query string, results []index.SearchResult, verbose ...bool) {
+	isVerbose := len(verbose) > 0 && verbose[0]
+	tty := stdoutIsTTY()
+	if !tty {
+		printSearchPlain(query, results, isVerbose)
+		return
+	}
+	printSearchTTY(query, results, isVerbose)
+}
+
+func printSearchPlain(query string, results []index.SearchResult, verbose bool) {
+	fmt.Printf("search: %s (%d sessions)\n", pythonStyleRepr(stripANSIAndControls(query)), len(results))
 	if len(results) == 0 {
 		fmt.Println("No matches.")
 		return
 	}
 	for number, result := range results {
-		fmt.Printf("%d. [%s] %s\n", number+1, result.Tool, result.SessionID)
-		fmt.Printf("   title: %s\n", dash(result.Title))
-		fmt.Printf("   cwd: %s\n", dash(result.CWD))
-		fmt.Printf("   time: %s .. %s\n", result.Created, result.Updated)
-		fmt.Printf("   messages: %d\n", result.MessageCount)
-		for _, path := range result.SourcePaths {
-			fmt.Printf("   path: %s\n", path)
-		}
-		for _, snippet := range result.Snippets {
-			fmt.Printf("   snippet: %s\n", snippet)
-		}
+		fmt.Printf("%d. [%s] %s | title=%s | snippet=%s | path=%s | messages=%d | updated=%s\n",
+			number+1, plainField(result.Tool), plainField(result.SessionID),
+			plainField(truncateCells(dash(result.Title), 72)),
+			plainField(truncateCells(firstSnippet(result), 160)),
+			plainField(truncateCells(pathSummary(result.SourcePaths), 80)),
+			result.MessageCount, plainField(result.Updated))
 	}
+}
+
+func printSearchTTY(query string, results []index.SearchResult, verbose bool) {
+	width := terminalColumns()
+	color := func(code, value string) string {
+		return colorText(code, value)
+	}
+	fmt.Printf("search: %s (%d sessions)\n", pythonStyleRepr(stripANSIAndControls(query)), len(results))
+	if len(results) == 0 {
+		fmt.Println("No matches.")
+		return
+	}
+	if verbose {
+		for number, result := range results {
+			fmt.Printf("%s %s\n", color("1;36", fmt.Sprintf("%d. [%s] %s", number+1, plainField(result.Tool), plainField(result.SessionID))),
+				color("2", relativeTime(result.Updated)))
+			fmt.Printf("  title: %s\n", truncateCells(dash(result.Title), 72))
+			fmt.Printf("  cwd: %s\n", truncateCells(dash(result.CWD), width-8))
+			fmt.Printf("  time: %s .. %s\n", plainField(result.Created), plainField(result.Updated))
+			fmt.Printf("  messages: %d\n", result.MessageCount)
+			fmt.Printf("  snippet: %s\n", truncateCells(firstSnippet(result), 160))
+			fmt.Printf("  path: %s\n\n", truncateCells(pathSummary(result.SourcePaths), 80))
+		}
+		return
+	}
+	for number, result := range results {
+		name := fmt.Sprintf("%d. [%s] %s", number+1, plainField(result.Tool), plainField(result.SessionID))
+		title := truncateCells(dash(result.Title), 72)
+		lineOne := fmt.Sprintf("%s  %s  %s  %s", name, title, relativeTime(result.Updated), messageCount(result.MessageCount))
+		fmt.Println(color("1", truncateCells(lineOne, width)))
+		lineTwo := fmt.Sprintf("   %s  %s", truncateCells(firstSnippet(result), 160), truncateCells(pathSummary(result.SourcePaths), 80))
+		fmt.Println(truncateCells(lineTwo, width))
+	}
+}
+
+func colorText(code, value string) string {
+	if os.Getenv("NO_COLOR") != "" {
+		return value
+	}
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
+}
+
+func stdoutIsTTY() bool {
+	stat, err := os.Stdout.Stat()
+	return err == nil && stat.Mode()&os.ModeCharDevice != 0
+}
+
+func terminalColumns() int {
+	if columns, err := strconv.Atoi(strings.TrimSpace(os.Getenv("COLUMNS"))); err == nil && columns > 0 {
+		return columns
+	}
+	return 80
+}
+
+func plainField(value string) string {
+	value = stripANSIAndControls(value)
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func firstSnippet(result index.SearchResult) string {
+	if len(result.Snippets) == 0 {
+		return "-"
+	}
+	return result.Snippets[0]
+}
+
+func pathSummary(paths []string) string {
+	if len(paths) == 0 {
+		return "-"
+	}
+	path := plainField(paths[0])
+	if len(paths) > 1 {
+		path += fmt.Sprintf(" (+%d)", len(paths)-1)
+	}
+	return path
+}
+
+func messageCount(count int) string {
+	return fmt.Sprintf("%d msg%s", count, map[bool]string{true: "s", false: ""}[count != 1])
+}
+
+func relativeTime(timestamp string) string {
+	parsed, err := time.Parse("2006-01-02T15:04:05Z", timestamp)
+	if err != nil || timestamp == "-" {
+		return "-"
+	}
+	delta := time.Now().UTC().Sub(parsed)
+	future := delta < 0
+	if future {
+		delta = -delta
+	}
+	var value string
+	switch {
+	case delta < time.Minute:
+		value = "just now"
+	case delta < time.Hour:
+		value = fmt.Sprintf("%dm", int(delta/time.Minute))
+	case delta < 24*time.Hour:
+		value = fmt.Sprintf("%dh", int(delta/time.Hour))
+	case delta < 30*24*time.Hour:
+		value = fmt.Sprintf("%dd", int(delta/(24*time.Hour)))
+	case delta < 365*24*time.Hour:
+		value = fmt.Sprintf("%dmo", int(delta/(30*24*time.Hour)))
+	default:
+		value = fmt.Sprintf("%dy", int(delta/(365*24*time.Hour)))
+	}
+	if future && value != "just now" {
+		return "in " + value
+	}
+	if value == "just now" {
+		return value
+	}
+	return value + " ago"
+}
+
+func stripANSIAndControls(value string) string {
+	var result strings.Builder
+	result.Grow(len(value))
+	for i := 0; i < len(value); {
+		if value[i] == 0x1b {
+			i++
+			if i >= len(value) {
+				break
+			}
+			switch value[i] {
+			case '[': // CSI, including SGR colors.
+				i++
+				for i < len(value) {
+					ch := value[i]
+					i++
+					if ch >= 0x40 && ch <= 0x7e {
+						break
+					}
+				}
+			case ']': // OSC title/hyperlink; terminate at BEL or ST.
+				i++
+				for i < len(value) {
+					if value[i] == '\a' {
+						i++
+						break
+					}
+					if value[i] == 0x1b && i+1 < len(value) && value[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+			default:
+				i++
+			}
+			continue
+		}
+		runeValue, size := utf8.DecodeRuneInString(value[i:])
+		if runeValue == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		i += size
+		if runeValue < 0x20 || runeValue == 0x7f {
+			if runeValue == '\n' || runeValue == '\r' || runeValue == '\t' {
+				result.WriteByte(' ')
+			}
+			continue
+		}
+		result.WriteRune(runeValue)
+	}
+	return result.String()
+}
+
+func cellWidth(value rune) int {
+	if unicode.Is(unicode.Mn, value) || unicode.Is(unicode.Me, value) {
+		return 0
+	}
+	if value >= 0x1100 && (value <= 0x115f || value == 0x2329 || value == 0x232a ||
+		(value >= 0x2e80 && value <= 0xa4cf) || (value >= 0xac00 && value <= 0xd7a3) ||
+		(value >= 0xf900 && value <= 0xfaff) || (value >= 0xfe10 && value <= 0xfe19) ||
+		(value >= 0xfe30 && value <= 0xfe6f) || (value >= 0xff00 && value <= 0xff60) ||
+		(value >= 0xffe0 && value <= 0xffe6)) {
+		return 2
+	}
+	return 1
+}
+
+func truncateCells(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	value = plainField(value)
+	if displayWidth(value) <= max {
+		return value
+	}
+	if max == 1 {
+		return "…"
+	}
+	remaining := max - 1
+	var result strings.Builder
+	width := 0
+	for _, runeValue := range value {
+		runeWidth := cellWidth(runeValue)
+		if width+runeWidth > remaining {
+			break
+		}
+		result.WriteRune(runeValue)
+		width += runeWidth
+	}
+	result.WriteRune('…')
+	return result.String()
+}
+
+func displayWidth(value string) int {
+	width := 0
+	for _, runeValue := range value {
+		width += cellWidth(runeValue)
+	}
+	return width
 }
 
 func pythonStyleRepr(value string) string {

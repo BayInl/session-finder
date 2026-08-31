@@ -996,7 +996,7 @@ type SearchResult struct {
 }
 
 // Search searches FTS5 indexes and aggregates hits by tool/session.
-func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem bool) ([]SearchResult, error) {
+func searchLegacy(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem bool) ([]SearchResult, error) {
 	if limit <= 0 {
 		return nil, errors.New("limit must be positive")
 	}
