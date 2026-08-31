@@ -130,6 +130,46 @@ func TestSearchCJKAndShortLiteralFallback(t *testing.T) {
 	}
 }
 
+func TestSearchCJKEmbeddedShortTermUnion(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'embedded', '/tmp', 'Embedded', 1704067200, 1704067200, '/src/embedded');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067200, '我们要部署到生产环境');
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'isolated', '/tmp', 'Isolated', 1704067200, 1704067200, '/src/isolated');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'user', 1704067201, '请 部署 一下');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Search(db, "部署", "", "", "", 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Search(%q) returned %d results, want 2: %#v", "部署", len(results), results)
+	}
+	got := map[string]bool{}
+	for _, result := range results {
+		got[result.SessionID] = true
+		if len(result.Snippets) == 0 || !strings.Contains(strings.Join(result.Snippets, " "), "部署") {
+			t.Fatalf("Search(%q) result lacks matching snippet: %#v", "部署", result)
+		}
+	}
+	if !got["embedded"] || !got["isolated"] {
+		t.Fatalf("Search(%q) sessions = %#v, want embedded and isolated", "部署", got)
+	}
+}
+
 func TestSearchLegacySessionANDAndPunctuationTokens(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
 	if err != nil {

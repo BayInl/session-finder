@@ -799,10 +799,10 @@ func candidateIDsForTerm(db *sql.DB, value, tool, cwd, after string, filters que
 		}
 		rows.Close()
 	}
-	// unicode61 can miss unspaced CJK, punctuation-delimited values, and
-	// short/edge trigrams. The fallback applies the same filters directly,
-	// avoiding a scan of unrelated messages.
-	if len(set) == 0 {
+	// unicode61 can miss unspaced CJK and short/edge terms even when FTS
+	// returns other candidates. Union the filtered LIKE results for those
+	// terms while keeping the broad-query path index-driven.
+	if utf8.RuneCountInString(value) < 3 || IsCJK(value) {
 		likeSet, err := queryLikeCandidates(db, value, tool, cwd, after, filters, includeSystem)
 		if err != nil {
 			return nil, err
