@@ -63,6 +63,76 @@ func TestScanAvoidsQuestionOnlyFalsePositive(t *testing.T) {
 	}
 }
 
+func TestScanRequiresChosenAndRationaleForResolvedOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{name: "descriptive usage", text: "你可以考虑代码复用、模板使用来减少代码量。"},
+		{name: "recommendation without rationale", text: "I recommend SQLite for the local cache."},
+		{name: "tradeoff without rationale", text: "Choose SQLite over Postgres."},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if candidates := Scan([]record.MessageRecord{msg("s1", "user", testCase.text)}); len(candidates) != 0 {
+				t.Fatalf("unresolved candidates = %#v", candidates)
+			}
+		})
+	}
+	resolved := Scan([]record.MessageRecord{msg("s1", "user", "Choose SQLite over Postgres because it is local.")})
+	if len(resolved) != 1 || resolved[0].Chosen == "" || resolved[0].Rationale == "" {
+		t.Fatalf("resolved candidates = %#v", resolved)
+	}
+}
+
+func TestScanConfirmationChineseBoundary(t *testing.T) {
+	base := msg("s1", "user", "Use SQLite because it is local.")
+	for _, testCase := range []struct {
+		name     string
+		text     string
+		explicit bool
+	}{
+		{name: "descriptive 可以", text: "可以考虑代码复用、模板使用来减少代码量。"},
+		{name: "explicit 可以", text: "可以，就采用 SQLite。", explicit: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			candidates := Scan([]record.MessageRecord{base, msg("s1", "user", testCase.text)})
+			if len(candidates) != 1 {
+				t.Fatalf("candidates = %#v, want one", candidates)
+			}
+			hasExplicit := hasEvidenceQuote(candidates[0].Evidence, testCase.text, EvidenceExplicit)
+			if hasExplicit != testCase.explicit {
+				t.Fatalf("explicit evidence = %v, want %v: %#v", hasExplicit, testCase.explicit, candidates[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestScanKeepsTranscriptSourcesSeparate(t *testing.T) {
+	left := msg("s1", "user", "Choose SQLite because it is local.")
+	left.SourcePath = "/tmp/left.jsonl"
+	right := msg("s1", "user", "Choose SQLite because it is portable.")
+	right.SourcePath = "/tmp/right.jsonl"
+	candidates := Scan([]record.MessageRecord{left, right})
+	if len(candidates) != 2 {
+		t.Fatalf("source-mixed candidates = %#v, want two", candidates)
+	}
+	if candidates[0].Provenance.SourcePath == candidates[1].Provenance.SourcePath {
+		t.Fatalf("source identity collapsed: %#v", candidates)
+	}
+}
+
+func TestScanFiltersKimiLoopEventNoise(t *testing.T) {
+	messages := []record.MessageRecord{
+		msg("s1", "assistant", `tool.call Bash {"command":"Choose SQLite because it is local."}`),
+		msg("s1", "assistant", `tool.result call-1 {"output":"Choose SQLite because it is local."}`),
+		msg("s1", "user", "Choose SQLite because it is local."),
+	}
+	if candidates := Scan(messages); len(candidates) != 1 {
+		t.Fatalf("loop-event candidates = %#v, want only the user decision", candidates)
+	}
+}
+
 func TestScanFiltersUsageNoiseAndMarkdownCode(t *testing.T) {
 	messages := []record.MessageRecord{
 		msg("s1", "assistant", "使用 SQLite 来做本地缓存。"),

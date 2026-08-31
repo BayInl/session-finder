@@ -14,6 +14,7 @@ import (
 	commandregistry "github.com/BayInl/session-finder/cmd/session-finder/registry"
 	"github.com/BayInl/session-finder/internal/extract"
 	"github.com/BayInl/session-finder/internal/index"
+	"github.com/BayInl/session-finder/internal/llm"
 )
 
 func init() {
@@ -66,6 +67,8 @@ func runExtract(argv []string) error {
 	indexDB := set.String("db", "", "path to the indexed session SQLite database")
 	candidateDB := set.String("candidate-db", "", "path to the candidate SQLite database")
 	actor := set.String("actor", defaultActor, "audit actor")
+	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
+	judgeLimit := set.Int("judge-limit", 0, "maximum candidate judge calls (0 means unlimited)")
 	asJSON := set.Bool("json", false, "emit JSON")
 	if err := set.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -76,8 +79,26 @@ func runExtract(argv []string) error {
 	if set.NArg() != 0 {
 		return errors.New("skill extract accepts no positional arguments")
 	}
+	mode, err := llm.JudgeMode(*judgeMode)
+	if err != nil {
+		return err
+	}
 	options := ExtractOptions{SessionID: *session, CWD: *cwd, After: *after, Pending: *pending,
-		IndexDBPath: *indexDB, CandidateDBPath: *candidateDB, Actor: *actor}
+		IndexDBPath: *indexDB, CandidateDBPath: *candidateDB, Actor: *actor, JudgeLimit: *judgeLimit}
+	if mode != llm.JudgeOff {
+		client, clientErr := llm.NewFromEnv()
+		if clientErr != nil {
+			if mode == llm.JudgeOn {
+				return clientErr
+			}
+		} else if llm.IsOffline(client) {
+			if mode == llm.JudgeOn {
+				return errors.New("judge=on requires a configured online llm provider")
+			}
+		} else {
+			options.Judge = NewLLMCandidateJudge(client)
+		}
+	}
 	ctx := context.Background()
 	if *pending || *session == "" {
 		pendingSessions, candidates, err := ExtractPending(ctx, options)
@@ -106,7 +127,7 @@ func runExtract(argv []string) error {
 		return err
 	}
 	defer store.Close()
-	bundle, candidate, err := ExtractAndPersist(ctx, store, messages, *actor)
+	bundle, candidate, err := ExtractAndPersistWithOptions(ctx, store, messages, *actor, options)
 	if err != nil && !errors.Is(err, ErrNoTranscript) {
 		return err
 	}

@@ -14,6 +14,7 @@ import (
 
 	commandregistry "github.com/BayInl/session-finder/cmd/session-finder/registry"
 	"github.com/BayInl/session-finder/internal/index"
+	"github.com/BayInl/session-finder/internal/llm"
 	"github.com/BayInl/session-finder/internal/record"
 )
 
@@ -43,7 +44,7 @@ func RunCommand(argv []string) error {
 
 func printUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: session-finder decisions <extract|list|review> [flags]")
-	fmt.Fprintln(writer, "  extract [--session ID] [--db PATH] [--json]")
+	fmt.Fprintln(writer, "  extract [--session ID] [--db PATH] [--judge off|auto|on] [--judge-limit N] [--json]")
 	fmt.Fprintln(writer, "  list [--json] [--status STATUS] [--session ID] [--db PATH]")
 	fmt.Fprintln(writer, "  review [--db PATH] [--id ID] [--action approve|reject|defer|edit]")
 }
@@ -53,6 +54,8 @@ func runExtract(writer io.Writer, argv []string) error {
 	set.SetOutput(writer)
 	sessionID := set.String("session", "", "restrict to one session ID or prefix")
 	dbPath := set.String("db", "", "path to SQLite index database")
+	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
+	judgeLimit := set.Int("judge-limit", 0, "maximum candidate judge calls (0 means unlimited)")
 	asJSON := set.Bool("json", false, "emit JSON")
 	if err := set.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -75,7 +78,29 @@ func runExtract(writer io.Writer, argv []string) error {
 	if err != nil {
 		return err
 	}
-	candidates := Extract(messages, ExtractOptions{})
+	mode, err := llm.JudgeMode(*judgeMode)
+	if err != nil {
+		return err
+	}
+	options := ExtractOptions{JudgeLimit: *judgeLimit, ResolvedOnly: true}
+	if mode != llm.JudgeOff {
+		client, clientErr := llm.NewFromEnv()
+		if clientErr != nil {
+			if mode == llm.JudgeOn {
+				return clientErr
+			}
+		} else if llm.IsOffline(client) {
+			if mode == llm.JudgeOn {
+				return errors.New("judge=on requires a configured online llm provider")
+			}
+		} else {
+			options.Judge = NewLLMCandidateJudge(client)
+		}
+	}
+	candidates, err := extractGrouped(context.Background(), messages, options)
+	if err != nil {
+		return err
+	}
 	if *asJSON {
 		return encodeJSON(writer, struct {
 			SessionID  string              `json:"session_id,omitempty"`
@@ -179,6 +204,41 @@ func encodeJSON(writer io.Writer, value any) error {
 	}
 	_, err := writer.Write(buffer.Bytes())
 	return err
+}
+
+type transcriptIdentity struct {
+	Tool       string
+	SessionID  string
+	SourcePath string
+}
+
+func extractGrouped(ctx context.Context, messages []record.MessageRecord, options ExtractOptions) ([]DecisionCandidate, error) {
+	groups := make(map[transcriptIdentity][]record.MessageRecord)
+	order := make([]transcriptIdentity, 0)
+	for _, message := range messages {
+		key := transcriptIdentity{Tool: message.Tool, SessionID: message.SessionID, SourcePath: message.SourcePath}
+		if _, exists := groups[key]; !exists {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], message)
+	}
+	candidates := make([]DecisionCandidate, 0)
+	for _, key := range order {
+		group := groups[key]
+		var found []DecisionCandidate
+		var err error
+		if options.Judge != nil {
+			found, err = ExtractContext(ctx, group, options)
+		} else {
+			found = Extract(group, options)
+		}
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, found...)
+	}
+	SortCandidates(candidates)
+	return candidates, nil
 }
 
 func loadMessages(db *sql.DB, sessionID string) ([]record.MessageRecord, error) {
