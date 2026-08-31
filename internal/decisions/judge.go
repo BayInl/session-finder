@@ -201,7 +201,7 @@ func decisionCandidateReview(messages []record.MessageRecord, candidate Decision
 	window := make([]JudgeMessage, 0)
 	for i := windowStart; i <= windowEnd && i >= 0 && i < len(messages); i++ {
 		message := messages[i]
-		if !sameTranscript(provenance, message) {
+		if !sameTranscript(provenance, message) || messageNoiseRE.MatchString(message.Text) || isNoise(message.Text) || loopEventNoiseRE.MatchString(strings.TrimSpace(message.Text)) {
 			continue
 		}
 		window = append(window, JudgeMessage{Index: i + 1, Role: message.Role, Content: message.Text})

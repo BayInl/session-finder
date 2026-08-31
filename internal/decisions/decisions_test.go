@@ -331,6 +331,112 @@ func TestConfidenceBandsReflectEvidence(t *testing.T) {
 	}
 }
 
+func TestScanRejectsUsageFragmentsAndDeliberation(t *testing.T) {
+	cases := []string{
+		"判断“有没有 use case”，我先用 text parser 快速拿一版章节骨架，因为需要先验证章节类型。",
+		"The models already use google prefix because the provider names require it.",
+		"不要把 /responses 再写进 base_url，因为 wire_api 会自动使用这个路径。",
+		"I'm considering SQLite over Postgres because the adapter may need fewer changes.",
+		"I might choose SQLite because it is local.",
+		"I wonder whether to use SQLite because it is local.",
+		"Let me try using PUT instead of PATCH, since the management panel probably uses PUT.",
+		"We could use SQLite because it is local, but the requirement is still open.",
+	}
+	for _, text := range cases {
+		if candidates := Scan([]record.MessageRecord{msg("s1", "assistant", text)}); len(candidates) != 0 {
+			t.Errorf("noise candidate for %q = %#v", text, candidates)
+		}
+	}
+}
+
+func TestScanCutsChineseReasonWithoutLeadingSpace(t *testing.T) {
+	candidate := Scan([]record.MessageRecord{msg("s1", "user", "使用 SQLite，因为它适合本地 MVP。")})
+	if len(candidate) != 1 {
+		t.Fatalf("candidates = %#v, want one", candidate)
+	}
+	if candidate[0].Chosen != "SQLite" || candidate[0].Rationale != "它适合本地 MVP" {
+		t.Fatalf("choice/rationale = %q/%q", candidate[0].Chosen, candidate[0].Rationale)
+	}
+}
+
+func TestScanDropsMessageLevelNotificationNoise(t *testing.T) {
+	for _, text := range []string{
+		"prefix <subagent_notification>{\"status\":\"done\"}</subagent_notification> Residual note",
+		"prefix <subagent_notification>{\"status\":\"done\"}</subagent_notification> Choose SQLite because it is local.",
+	} {
+		if candidates := Scan([]record.MessageRecord{msg("s1", "assistant", text)}); len(candidates) != 0 {
+			t.Fatalf("notification candidate for %q = %#v", text, candidates)
+		}
+	}
+}
+
+func TestScanKeepsExplicitResolvedChoices(t *testing.T) {
+	cases := []struct {
+		text   string
+		chosen string
+	}{
+		{"Choose SQLite over Postgres because SQLite keeps the MVP local.", "SQLite"},
+		{"Use SQLite instead of Postgres because tests are simpler.", "SQLite"},
+		{"推荐使用 SQLite，因为它适合本地 MVP。", "SQLite"},
+	}
+	for _, testCase := range cases {
+		candidates := Scan([]record.MessageRecord{msg("s1", "user", testCase.text)})
+		if len(candidates) != 1 || candidates[0].Chosen != testCase.chosen || candidates[0].Rationale == "" {
+			t.Fatalf("resolved %q = %#v", testCase.text, candidates)
+		}
+	}
+}
+
+func TestScanPreservesPathAndShortOptions(t *testing.T) {
+	cases := []struct {
+		text   string
+		chosen string
+	}{
+		{"Use edge_bundle because it keeps the release artifact self-contained.", "edge_bundle"},
+		{"Use 1 because it inserts the table directly in the chapter.", "1"},
+		{"Use MS-Swift because it supports the research workflow.", "MS-Swift"},
+		{"Use SurGE because it matches the existing proxy setup.", "SurGE"},
+		{"Use subprojects/paper_report_agent/ because the package is already organized there.", "subprojects/paper_report_agent/"},
+		{"Use opencode/deepseek-v4-flash-free because that provider is available locally.", "opencode/deepseek-v4-flash-free"},
+	}
+	for _, testCase := range cases {
+		candidates := Scan([]record.MessageRecord{msg("s1", "user", testCase.text)})
+		if len(candidates) != 1 || candidates[0].Chosen != testCase.chosen || candidates[0].Rationale == "" {
+			t.Fatalf("resolved %q = %#v", testCase.text, candidates)
+		}
+	}
+
+	alternatives := Scan([]record.MessageRecord{msg("s1", "user", "Choose opencode/deepseek-v4-flash-free or edge_bundle because both are available locally.")})
+	if len(alternatives) != 1 || alternatives[0].Chosen != "opencode/deepseek-v4-flash-free" || len(alternatives[0].Options) != 2 {
+		t.Fatalf("path alternatives = %#v", alternatives)
+	}
+}
+
+func TestScanRejectsMetadataNegativeAndOpenQuestionNoise(t *testing.T) {
+	for _, text := range []string{
+		"不要使用 http://localhost:5173/，因为 localhost 可能打开另一个服务。",
+		"不要把 /responses 再写进 base_url，因为 wire_api 会自动使用这个路径。",
+		"这里会使用 `web-research` skill，因为你明确要做外部调研。",
+		"使用 `documents:documents` 技能，因为这次需要同步修改正式 Word 文档。",
+		"这次不用 pane run，改用 send-text + send-keys 手动方式？",
+		"Since `&` might be an alignment point in equations, should I go with `Qwen and Llama` instead to avoid issues?",
+		"The issue is that the route builder doesn't pick them up because no channel returns them.",
+		"I’m pulling the exact installed versions now, because the command recommendation depends on the environment.",
+		"I want to be precise about whether the command works with the existing environment.",
+	} {
+		if candidates := Scan([]record.MessageRecord{msg("s1", "assistant", text)}); len(candidates) != 0 {
+			t.Errorf("metadata/negative/question candidate for %q = %#v", text, candidates)
+		}
+	}
+}
+
+func TestScanDoesNotSplitRationaleEnumerationsIntoOptions(t *testing.T) {
+	candidates := Scan([]record.MessageRecord{msg("s1", "user", "Use SurGE because it supports 检索、生成和引用。")})
+	if len(candidates) != 1 || candidates[0].Chosen != "SurGE" || len(candidates[0].Options) != 1 || candidates[0].Options[0] != "SurGE" {
+		t.Fatalf("rationale enumeration changed choice/options = %#v", candidates)
+	}
+}
+
 func TestGitSelectionRejectsFabricatedHashes(t *testing.T) {
 	candidates := []CommitRef{{Hash: "abc123", ShortHash: "abc123", Subject: "decision"}}
 	if _, err := SelectCommitCandidates(candidates, []string{"deadbeef"}); !errors.Is(err, ErrCommitNotCandidate) {
