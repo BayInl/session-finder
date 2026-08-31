@@ -1,0 +1,10 @@
+{"type":"context.append_message","time":"2024-01-02T00:00:00Z","message":{"role":"assistant","origin":{"kind":"user"},"content":[{"type":"text","text":"Workspace Path: /fixture/kimi\n用户问题"}]}}
+{"type":"context.append_message","time":"2024-01-02T00:00:01Z","message":{"role":"user","origin":{"kind":"injection"},"content":[{"type":"text","text":"系统注入"}]}}
+{"type":"context.append_loop_event","time":1704153602000,"event":{"type":"content.part","part":{"type":"think","think":"内部推理不应进入记录"}}}
+{"type":"context.append_loop_event","time":1704153603000,"event":{"type":"content.part","part":{"type":"text","text":"我会先检查项目结构。"}}}
+{"type":"context.append_loop_event","time":1704153604000,"event":{"type":"tool.call","toolCallId":"call_fixture_1","name":"Bash","args":{"command":"pwd","timeout":30}}}
+{"type":"context.append_loop_event","time":1704153605000,"event":{"type":"tool.result","toolCallId":"call_fixture_1","result":{"isError":true,"output":"permission denied","truncated":true}}}
+{"type":"context.append_loop_event","time":1704153606000,"event":{"type":"step.begin","step":1}}
+{"type":"other","time":1704153607000,"event":{"type":"tool.call","name":"ignored","args":{"x":1}}}
+{"type":"context.append_loop_event","time":1704153608000,"event":{"type":"content.part","part":{"type":"image","url":"ignored"}}}
+{"type":"context.append_loop_event","time":1704153609000,"event":{"type":"content.part","part":{"type":"text","text":"最后回答。"}}}
