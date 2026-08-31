@@ -51,6 +51,25 @@ session-finder search "SQLite" --tool codex --limit 10
 session-finder search "error" --json
 ```
 
+### Query syntax
+
+Plain space-separated terms match at the session level (a session matches when
+the terms appear across its messages). For finer control, the query string
+supports:
+
+- **Boolean operators** — `NOT` > `AND` > `OR`, with parentheses:
+  `docker AND NOT test`, `(error OR panic) AND timeout`
+- **Phrases** — `"exact phrase"` matches the literal text
+- **Field prefixes** — `tool:codex`, `cwd:project`, `after:2026-01-01`
+  (combinable with boolean expressions: `tool:codex 部署`)
+
+### Output modes
+
+In a terminal, results print as compact two-line entries; piped output is
+single-line. Use `--verbose` for full result cards, `--json` for
+machine-readable output. Colors follow `NO_COLOR`; column width adapts to the
+terminal. `--include-system` (alias `--all`) includes system/noise records.
+
 Show the message stream for a full session ID or unique ID prefix:
 
 ```sh
