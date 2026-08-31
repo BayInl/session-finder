@@ -1,0 +1,131 @@
+package index
+
+import (
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestParseQueryFieldsBooleanAndEscapes(t *testing.T) {
+	expr, filters, err := parseQuery(`tool:codex cwd:"/work space" after:2024-01-02 (alpha OR "beta gamma") NOT escaped\ AND`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expr == nil {
+		t.Fatal("parseQuery returned nil expression")
+	}
+	if !reflect.DeepEqual(filters.tools, []string{"codex"}) ||
+		!reflect.DeepEqual(filters.cwds, []string{"/work space"}) ||
+		!reflect.DeepEqual(filters.afters, []string{"2024-01-02"}) {
+		t.Fatalf("filters = %#v", filters)
+	}
+	debug, err := queryDebugString(`tool:codex cwd:"/work space" after:2024-01-02 (alpha OR "beta gamma") NOT escaped\ AND`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(debug, "tool:codex") || !strings.Contains(debug, `"beta gamma"`) || !strings.Contains(debug, "NOT escaped AND") {
+		t.Fatalf("debug query = %q", debug)
+	}
+}
+
+func TestParseQueryRejectsInvalidBooleanExpressions(t *testing.T) {
+	for _, query := range []string{
+		`NOT alpha`,
+		`NOT (alpha)`,
+		`alpha AND`,
+		`alpha OR`,
+		`(alpha OR beta`,
+		`alpha beta)`,
+		`"unterminated`,
+		"alpha\\",
+	} {
+		if _, _, err := parseQuery(query); err == nil {
+			t.Errorf("parseQuery(%q) unexpectedly succeeded", query)
+		}
+	}
+}
+
+func TestSearchBooleanPhraseAndFields(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'one', '/work/app', 'One', 1704067200, 1704067300, '/src/one');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067201, 'alpha beta phrase here');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'assistant', 1704067202, 'alpha only');
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('grok', 'two', '/work/other', 'Two', 1704067200, 1704067400, '/src/two');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'user', 1704067203, 'beta phrase here');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'assistant', 1704067204, 'gamma only');
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'three', '/other', 'Three', 1704067200, 1704067500, '/src/three');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (3, 'user', 1704067205, 'alpha forbidden');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (3, 'assistant', 1704067206, 'delta');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "and", query: "alpha beta", want: []string{"one"}},
+		{name: "or", query: "alpha OR gamma", want: []string{"one", "three", "two"}},
+		{name: "not", query: "alpha NOT forbidden", want: []string{"one"}},
+		{name: "phrase", query: `"beta phrase"`, want: []string{"two", "one"}},
+		{name: "field", query: `tool:codex alpha`, want: []string{"one", "three"}},
+		{name: "quoted field", query: `cwd:"/work/app" alpha`, want: []string{"one"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			results, err := Search(db, tc.query, "", "", "", 20, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(results))
+			for _, result := range results {
+				got = append(got, result.SessionID)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Search(%q) sessions = %#v, want %#v; results=%#v", tc.query, got, tc.want, results)
+			}
+		})
+	}
+}
+
+func TestSearchCJKAndShortLiteralFallback(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'unicode', '/tmp', 'Unicode', 1704067200, 1704067200, '/src/unicode');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067200, '部署完成 ✅');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"部署完成", "✅", "部"} {
+		results, err := Search(db, query, "", "", "", 20, false)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", query, err)
+		}
+		if len(results) != 1 || results[0].SessionID != "unicode" {
+			t.Fatalf("Search(%q) = %#v", query, results)
+		}
+	}
+}
