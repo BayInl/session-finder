@@ -41,34 +41,44 @@ reclaim_stale_lock() {
   rmdir "$lock_dir" 2>/dev/null || return 1
   mkdir "$lock_dir" 2>/dev/null || return 1
 }
-if ! mkdir "$lock_dir" 2>/dev/null; then
+while :; do
+  if mkdir "$lock_dir" 2>/dev/null; then
+    break
+  fi
   if [ -r "$lock_owner" ]; then
     if ! {
       IFS= read -r holder_pid
       IFS= read -r holder_started
     } < "$lock_owner"; then
       reclaim_stale_lock || exit 0
-    else
-      case "$holder_pid" in
-        *[!0-9]*|"") reclaim_stale_lock || exit 0 ;;
-      esac
-      [ "$holder_pid" -gt 0 ] 2>/dev/null || exit 0
-      if kill -0 "$holder_pid" 2>/dev/null; then
-        exit 0
-      fi
-      case "$holder_started" in
-        *[!0-9]*|"") reclaim_stale_lock || exit 0 ;;
-      esac
-      [ "$now" -ge "$holder_started" ] 2>/dev/null || exit 0
-      [ "$((now - holder_started))" -ge "$lock_ttl" ] 2>/dev/null || exit 0
-      rm -f "$lock_dir"/owner "$lock_dir"/owner.* 2>/dev/null || exit 0
-      rmdir "$lock_dir" 2>/dev/null || exit 0
-      mkdir "$lock_dir" 2>/dev/null || exit 0
+      break
     fi
-  else
-    reclaim_stale_lock || exit 0
+    case "$holder_pid" in
+      *[!0-9]*|"")
+        reclaim_stale_lock || exit 0
+        break
+        ;;
+    esac
+    [ "$holder_pid" -gt 0 ] 2>/dev/null || exit 0
+    if kill -0 "$holder_pid" 2>/dev/null; then
+      exit 0
+    fi
+    case "$holder_started" in
+      *[!0-9]*|"")
+        reclaim_stale_lock || exit 0
+        break
+        ;;
+    esac
+    [ "$now" -ge "$holder_started" ] 2>/dev/null || exit 0
+    [ "$((now - holder_started))" -ge "$lock_ttl" ] 2>/dev/null || exit 0
+    rm -f "$lock_dir"/owner "$lock_dir"/owner.* 2>/dev/null || exit 0
+    rmdir "$lock_dir" 2>/dev/null || exit 0
+    mkdir "$lock_dir" 2>/dev/null || exit 0
+    break
   fi
-fi
+  reclaim_stale_lock || exit 0
+  break
+done
 owner_tmp="$lock_owner.tmp.$$"
 if ! printf "%s\n%s\n" "$$" "$now" > "$owner_tmp" 2>/dev/null; then
   rm -f "$owner_tmp" 2>/dev/null || true
