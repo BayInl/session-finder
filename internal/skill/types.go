@@ -108,7 +108,9 @@ type CandidateBundle struct {
 type Bundle = CandidateBundle
 type SkillCandidate = CandidateBundle
 
-// ExtractOptions controls transcript extraction and candidate persistence.
+// ExtractOptions controls transcript extraction, optional candidate review, and
+// candidate persistence. Judge is deliberately separate from the shared
+// extract.SignalBundle path so skill quality remains independently gated.
 type ExtractOptions struct {
 	SessionID       string
 	CWD             string
@@ -117,6 +119,8 @@ type ExtractOptions struct {
 	IndexDBPath     string
 	CandidateDBPath string
 	Actor           string
+	Judge           CandidateJudge
+	JudgeLimit      int
 }
 
 // ReviewRequest describes a human review operation. EvidenceID is optional for

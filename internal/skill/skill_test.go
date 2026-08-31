@@ -356,3 +356,112 @@ func TestPublishAndTransitionCleansDirectoryOnTransitionFailure(t *testing.T) {
 		t.Fatalf("published directory stat error = %v, want not exist", err)
 	}
 }
+
+func skillTestContains(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBuildCandidateJudgeRunsForLowConfidenceCandidates(t *testing.T) {
+	calls := 0
+	var seen CandidateReview
+	judge := CandidateJudgeFunc(func(_ context.Context, review CandidateReview) (CandidateJudgment, error) {
+		calls++
+		seen = review
+		return CandidateJudgment{Disposition: QualityDraft, Confidence: 0.91, ReasonCodes: []string{"reusable"}}, nil
+	})
+	bundle, err := BuildCandidateWithOptions([]record.MessageRecord{
+		skillMessage("user", "Document the release workflow."),
+		skillMessage("assistant", "Run go test ./...; then build the release artifact."),
+		skillMessage("user", "Looks good, approved. go test ./... passed with all tests green."),
+	}, ExtractOptions{Judge: judge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || seen.Candidate.Slug == "" || len(seen.Messages) == 0 {
+		t.Fatalf("judge calls/review = %d/%#v", calls, seen)
+	}
+	if bundle.Quality.Confidence != 0.91 || bundle.Quality.Signals.Confidence != 0.91 || bundle.Quality.RecommendedAction != extract.ActionDraft || bundle.Quality.Signals.RecommendedAction != extract.ActionDraft {
+		t.Fatalf("judge metadata = %+v", bundle.Quality)
+	}
+	if !skillTestContains(bundle.Quality.Reasons, "llm:reusable") {
+		t.Fatalf("judge reason missing: %+v", bundle.Quality.Reasons)
+	}
+}
+
+func TestBuildCandidateHardSuppressionsSkipJudge(t *testing.T) {
+	for name, messages := range map[string][]record.MessageRecord{
+		"missing success evidence": {
+			skillMessage("user", "Document the release workflow."),
+			skillMessage("assistant", "Run the release workflow."),
+		},
+		"one off": {
+			skillMessage("user", "Do this quick fix just this once."),
+			skillMessage("assistant", "Done."),
+			skillMessage("user", "Looks good, approved."),
+		},
+		"secret": {
+			skillMessage("user", "Document the deployment workflow."),
+			skillMessage("assistant", "Use token=sk_live_1234567890abcdef and deploy."),
+			skillMessage("user", "Looks good, approved."),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			bundle, err := BuildCandidateWithOptions(messages, ExtractOptions{Judge: CandidateJudgeFunc(func(context.Context, CandidateReview) (CandidateJudgment, error) {
+				calls++
+				return CandidateJudgment{Disposition: QualityDraft, Confidence: 1}, nil
+			})})
+			if err != nil && !errors.Is(err, ErrNoTranscript) {
+				t.Fatal(err)
+			}
+			if calls != 0 {
+				t.Fatalf("hard suppression invoked judge %d times: %+v", calls, bundle)
+			}
+			if name != "missing success evidence" && bundle.Quality.Disposition != QualitySuppress {
+				t.Fatalf("bundle = %+v, want hard suppression", bundle)
+			}
+		})
+	}
+}
+
+func TestApplyCandidateJudgmentOnlyRaisesRisksAndSynchronizesMetadata(t *testing.T) {
+	bundle := publishableBundle()
+	bundle.Quality.Confidence = 0.7
+	bundle.Quality.Score = 0.72
+	bundle.Quality.OneOffRisk = 0.2
+	bundle.Quality.SecretRisk = 0.1
+	bundle.Quality.RecommendedAction = extract.ActionDraft
+	bundle.Quality.Signals = extract.SignalBundle{Confidence: 0.7, SuccessEvidence: []string{extract.EvidenceTestsPassed}, OneOffRisk: 0.2, SecretRisk: 0.1, RecommendedAction: extract.ActionDraft}
+	got := applyCandidateJudgment(bundle, CandidateJudgment{Disposition: "review", Confidence: 0.99, OneOffRisk: 0.8, SecretRisk: 0.7, ReasonCodes: []string{"ambiguous"}})
+	if got.Quality.OneOffRisk != 0.8 || got.Quality.SecretRisk != 0.7 || got.Quality.Signals.OneOffRisk != 0.8 || got.Quality.Signals.SecretRisk != 0.7 {
+		t.Fatalf("risks not synchronized: %+v", got.Quality)
+	}
+	if got.Quality.Confidence != 0.7 || got.Quality.Score != 0 || got.Quality.RecommendedAction != extract.ActionSuppress || got.Quality.Signals.RecommendedAction != extract.ActionSuppress || got.Quality.Disposition != QualitySuppress {
+		t.Fatalf("review metadata = %+v", got.Quality)
+	}
+	lower := applyCandidateJudgment(bundle, CandidateJudgment{Disposition: QualityDraft, Confidence: 0.1, OneOffRisk: 0.01, SecretRisk: 0.02})
+	if lower.Quality.Confidence != 0.7 || lower.Quality.OneOffRisk != 0.2 || lower.Quality.SecretRisk != 0.1 {
+		t.Fatalf("judge lowered existing quality: %+v", lower.Quality)
+	}
+}
+
+func TestBuildCandidateJudgeFailureKeepsOfflineBundle(t *testing.T) {
+	bundle, err := BuildCandidateWithOptions([]record.MessageRecord{
+		skillMessage("user", "Document the release workflow."),
+		skillMessage("assistant", "Run go test ./...; then build the release artifact."),
+		skillMessage("user", "Looks good, approved. go test ./... passed."),
+	}, ExtractOptions{Judge: CandidateJudgeFunc(func(context.Context, CandidateReview) (CandidateJudgment, error) {
+		return CandidateJudgment{}, errors.New("offline provider")
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Quality.Disposition != QualityDraft || !skillTestContains(bundle.Quality.Reasons, "llm:fallback") {
+		t.Fatalf("fallback bundle = %+v", bundle)
+	}
+}

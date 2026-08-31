@@ -20,10 +20,16 @@ const (
 	defaultActor         = "skill-extractor"
 )
 
-// BuildCandidate converts a normalized transcript into a reviewable bundle.
-// It never emits transcript excerpts in the rendered skill; evidence pointers
-// stay in the bundle persisted to the local candidate store.
+// BuildCandidate converts a normalized transcript into a reviewable bundle
+// using only deterministic local signals.
 func BuildCandidate(messages []record.MessageRecord) (CandidateBundle, error) {
+	return BuildCandidateWithOptions(messages, ExtractOptions{})
+}
+
+// BuildCandidateWithOptions optionally runs the independent skill candidate
+// judge after the local quality gate. Hard suppressions never invoke an LLM;
+// judge failures retain the deterministic bundle and add a fallback reason.
+func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractOptions) (CandidateBundle, error) {
 	clean := make([]record.MessageRecord, 0, len(messages))
 	for _, message := range messages {
 		if strings.TrimSpace(message.Text) == "" || strings.EqualFold(strings.TrimSpace(message.Role), "system") || isInjectedNoiseText(message.Text) {
@@ -85,6 +91,14 @@ func BuildCandidate(messages []record.MessageRecord) (CandidateBundle, error) {
 		CWD:          firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.CWD }),
 		SourcePath:   firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.SourcePath }),
 	}
+	if options.Judge != nil && quality.Disposition != QualitySuppress && quality.OneOffRisk < HighOneOffRisk && quality.SecretRisk < HighSecretRisk && len(quality.SuccessEvidence) >= MinimumSuccessEvidence && quality.Confidence < 0.85 {
+		judgment, err := options.Judge.Judge(context.Background(), candidateReview(clean, bundle))
+		if err != nil {
+			bundle.Quality.Reasons = appendSkillReason(bundle.Quality.Reasons, "llm:fallback")
+		} else {
+			bundle = applyCandidateJudgment(bundle, judgment)
+		}
+	}
 	return normalizeBundle(bundle), nil
 }
 
@@ -137,14 +151,19 @@ func risksFromSignals(signals extract.SignalBundle) []string {
 	return normalizeStringList(risks)
 }
 
-// ExtractAndPersist builds a bundle and appends it to the candidate store. A
-// suppressed bundle is persisted as rejected with recommended_action=suppress,
-// preserving the reason for later inspection without allowing publication.
+// ExtractAndPersist builds an offline bundle and appends it to the candidate
+// store. It remains a compatibility wrapper with no LLM calls.
 func ExtractAndPersist(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string) (CandidateBundle, extract.Candidate, error) {
+	return ExtractAndPersistWithOptions(ctx, store, messages, actor, ExtractOptions{})
+}
+
+// ExtractAndPersistWithOptions builds a bundle with an optional skill judge and
+// appends it to the candidate store. Judge failures retain local results.
+func ExtractAndPersistWithOptions(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string, options ExtractOptions) (CandidateBundle, extract.Candidate, error) {
 	if store == nil {
 		return CandidateBundle{}, extract.Candidate{}, errors.New("nil candidate store")
 	}
-	bundle, err := BuildCandidate(messages)
+	bundle, err := BuildCandidateWithOptions(messages, options)
 	if err != nil {
 		return bundle, extract.Candidate{}, err
 	}
@@ -450,7 +469,7 @@ func ExtractPending(ctx context.Context, options ExtractOptions) ([]PendingSessi
 			created = append(created, candidate)
 			continue
 		}
-		_, candidate, createErr := ExtractAndPersist(ctx, store, messages, options.Actor)
+		_, candidate, createErr := ExtractAndPersistWithOptions(ctx, store, messages, options.Actor, options)
 		if errors.Is(createErr, ErrNoTranscript) {
 			candidate, skipErr := persistSkippedSession(ctx, store, session, options.Actor)
 			if skipErr != nil {

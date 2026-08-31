@@ -311,7 +311,7 @@ func (c *openAIClient) Complete(ctx context.Context, request CompletionRequest) 
 	if err != nil {
 		return CompletionResponse{}, err
 	}
-	if err := validateSignalJSON(content); err != nil {
+	if err := ValidateJSONSchema(content, schema); err != nil {
 		return CompletionResponse{}, err
 	}
 	return CompletionResponse{Provider: ProviderOpenAI, Model: c.model, JSON: content}, nil

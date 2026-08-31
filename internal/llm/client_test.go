@@ -157,6 +157,74 @@ func TestSignalClientOffline(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientValidatesCustomSchemaAndRejectsMalformedResponses(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"required":["disposition","confidence","reason_codes"],"properties":{"disposition":{"type":"string","enum":["draft","review"]},"confidence":{"type":"number","minimum":0,"maximum":1},"reason_codes":{"type":"array","items":{"type":"string"}}}}`)
+	cases := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{name: "valid", content: `{"disposition":"draft","confidence":0.8,"reason_codes":["clear"]}`},
+		{name: "missing", content: `{"disposition":"draft","confidence":0.8}`, wantErr: true},
+		{name: "unknown", content: `{"disposition":"draft","confidence":0.8,"reason_codes":[],"extra":true}`, wantErr: true},
+		{name: "out of range", content: `{"disposition":"draft","confidence":2,"reason_codes":[]}`, wantErr: true},
+		{name: "trailing", content: `{"disposition":"draft","confidence":0.8,"reason_codes":[]} {}`, wantErr: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var body struct {
+					ResponseFormat struct {
+						JSONSchema struct {
+							Schema json.RawMessage `json:"schema"`
+						} `json:"json_schema"`
+					} `json:"response_format"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				if string(body.ResponseFormat.JSONSchema.Schema) != string(schema) {
+					t.Errorf("schema = %s, want %s", body.ResponseFormat.JSONSchema.Schema, schema)
+				}
+				_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":` + jsonString(testCase.content) + `}}]}`))
+			}))
+			defer server.Close()
+			client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", Model: "model"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Complete(context.Background(), CompletionRequest{Schema: schema})
+			if testCase.wantErr && err == nil {
+				t.Fatalf("response accepted malformed content")
+			}
+			if !testCase.wantErr && err != nil {
+				t.Fatalf("valid response error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateJSONSchemaRejectsTrailingAndSupportsNestedStrictFields(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"required":["items"],"properties":{"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"integer"}}}}}}`)
+	for _, value := range []string{
+		`{"items":[{"id":1}]}`,
+		`{"items":[{"id":1}]} {}`,
+		`{"items":[{"id":1,"extra":true}]}`,
+		`{"items":[{"id":1.5}]}`,
+	} {
+		err := ValidateJSONSchema([]byte(value), schema)
+		if strings.HasSuffix(value, `}`) && value == `{"items":[{"id":1}]}` {
+			if err != nil {
+				t.Fatalf("valid nested document error = %v", err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Fatalf("malformed nested document accepted: %s", value)
+		}
+	}
+}
+
 func jsonString(value string) string {
 	data, _ := json.Marshal(value)
 	return string(data)
