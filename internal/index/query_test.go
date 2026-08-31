@@ -129,3 +129,53 @@ func TestSearchCJKAndShortLiteralFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchLegacySessionANDAndPunctuationTokens(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'split', '/tmp', 'Split', 1704067200, 1704067200, '/tmp/split');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067200, 'apple in first message');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'assistant', 1704067201, 'banana in second message');
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'punctuated', '/tmp/session-finder', 'Punctuated', 1704067200, 1704067200, '/session-finder/data');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'user', 1704067202, 'session appears here');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'assistant', 1704067203, 'finder appears there');
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'partial', '/tmp', 'Partial', 1704067200, 1704067200, '/tmp/partial');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (3, 'user', 1704067204, 'session only');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Search(db, "apple banana", "", "", "", 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SessionID != "split" || results[0].MessageCount != 2 {
+		t.Fatalf("session-level AND results = %#v", results)
+	}
+	if len(results[0].Snippets) != 2 || !strings.Contains(strings.Join(results[0].Snippets, " "), "apple") ||
+		!strings.Contains(strings.Join(results[0].Snippets, " "), "banana") {
+		t.Fatalf("session-level AND snippets = %#v", results[0].Snippets)
+	}
+
+	results, err = Search(db, "session-finder", "", "", "", 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SessionID != "punctuated" || results[0].MessageCount != 2 {
+		t.Fatalf("punctuation-token results = %#v", results)
+	}
+	if strings.Contains(strings.Join(results[0].Snippets, " "), "session only") {
+		t.Fatalf("punctuation snippets contain unrelated message: %#v", results[0].Snippets)
+	}
+}

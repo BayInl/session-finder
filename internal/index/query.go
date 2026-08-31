@@ -50,6 +50,7 @@ type queryExpr struct {
 	kind        queryExprKind
 	atom        queryAtom
 	left, right *queryExpr
+	legacyAND   bool
 }
 
 type queryFilters struct {
@@ -335,7 +336,7 @@ func (p *queryParser) parseAnd() (*queryExpr, error) {
 			if err != nil {
 				return nil, err
 			}
-			left = &queryExpr{kind: queryAndExpr, left: left, right: right}
+			left = &queryExpr{kind: queryAndExpr, left: left, right: right, legacyAND: true}
 			continue
 		}
 		break
@@ -455,37 +456,100 @@ func cloneIDSet(values map[int64]struct{}) map[int64]struct{} {
 	return result
 }
 
-func evalQuery(expr *queryExpr, universe map[int64]struct{}, atoms map[string]map[int64]struct{}) map[int64]struct{} {
+func sessionKey(row searchMessage) string {
+	return row.tool + "\x00" + row.sessionID
+}
+
+func sessionSet(ids map[int64]struct{}, universe map[int64]searchMessage) map[string]struct{} {
+	result := make(map[string]struct{})
+	for id := range ids {
+		if row, ok := universe[id]; ok {
+			result[sessionKey(row)] = struct{}{}
+		}
+	}
+	return result
+}
+
+// implicitSessionAND preserves the original whitespace-query contract: terms
+// separated only by spaces are required to occur in the same session, not the
+// same message. The returned IDs are the matching message IDs from that
+// session, just like the legacy per-term FTS aggregation.
+func implicitSessionAND(left, right map[int64]struct{}, universe map[int64]searchMessage) map[int64]struct{} {
+	leftSessions := sessionSet(left, universe)
+	rightSessions := sessionSet(right, universe)
+	common := make(map[string]struct{})
+	for key := range leftSessions {
+		if _, ok := rightSessions[key]; ok {
+			common[key] = struct{}{}
+		}
+	}
+	result := make(map[int64]struct{})
+	for id := range left {
+		if row, ok := universe[id]; ok {
+			if _, ok := common[sessionKey(row)]; ok {
+				result[id] = struct{}{}
+			}
+		}
+	}
+	for id := range right {
+		if row, ok := universe[id]; ok {
+			if _, ok := common[sessionKey(row)]; ok {
+				result[id] = struct{}{}
+			}
+		}
+	}
+	return result
+}
+
+func intersectIDSets(left, right map[int64]struct{}) map[int64]struct{} {
+	if len(left) > len(right) {
+		left, right = right, left
+	}
+	result := make(map[int64]struct{}, len(left))
+	for id := range left {
+		if _, ok := right[id]; ok {
+			result[id] = struct{}{}
+		}
+	}
+	return result
+}
+
+func exprContainsNot(expr *queryExpr) bool {
 	if expr == nil {
-		return cloneIDSet(universe)
+		return false
+	}
+	if expr.kind == queryNotExpr {
+		return true
+	}
+	return exprContainsNot(expr.left) || exprContainsNot(expr.right)
+}
+
+func evalQuery(expr *queryExpr, universeIDs map[int64]struct{}, universe map[int64]searchMessage, atoms map[string]map[int64]struct{}) map[int64]struct{} {
+	if expr == nil {
+		return cloneIDSet(universeIDs)
 	}
 	switch expr.kind {
 	case queryAtomExpr:
 		return cloneIDSet(atoms[expr.atom.key])
 	case queryNotExpr:
-		child := evalQuery(expr.left, universe, atoms)
-		result := make(map[int64]struct{}, len(universe))
-		for id := range universe {
+		child := evalQuery(expr.left, universeIDs, universe, atoms)
+		result := make(map[int64]struct{}, len(universeIDs))
+		for id := range universeIDs {
 			if _, excluded := child[id]; !excluded {
 				result[id] = struct{}{}
 			}
 		}
 		return result
 	case queryAndExpr:
-		left := evalQuery(expr.left, universe, atoms)
-		right := evalQuery(expr.right, universe, atoms)
-		if len(left) > len(right) {
-			left, right = right, left
+		left := evalQuery(expr.left, universeIDs, universe, atoms)
+		right := evalQuery(expr.right, universeIDs, universe, atoms)
+		if expr.legacyAND && !exprContainsNot(expr.left) && !exprContainsNot(expr.right) {
+			return implicitSessionAND(left, right, universe)
 		}
-		for id := range left {
-			if _, ok := right[id]; !ok {
-				delete(left, id)
-			}
-		}
-		return left
+		return intersectIDSets(left, right)
 	case queryOrExpr:
-		left := evalQuery(expr.left, universe, atoms)
-		right := evalQuery(expr.right, universe, atoms)
+		left := evalQuery(expr.left, universeIDs, universe, atoms)
+		right := evalQuery(expr.right, universeIDs, universe, atoms)
 		for id := range right {
 			left[id] = struct{}{}
 		}
@@ -496,9 +560,10 @@ func evalQuery(expr *queryExpr, universe map[int64]struct{}, atoms map[string]ma
 }
 
 type searchMessage struct {
-	id                                                  int64
-	tool, sessionID, title, cwd, sourcePath, role, text string
-	created, updated, ts                                any
+	id                          int64
+	tool, sessionID, title, cwd string
+	sourcePath, role            string
+	created, updated, ts        any
 }
 
 func parseAfterFilter(value string) (float64, error) {
@@ -509,7 +574,7 @@ func parseAfterFilter(value string) (float64, error) {
 	return *epoch, nil
 }
 
-func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, includeSystem bool) (map[int64]searchMessage, error) {
+func searchFilterClauses(tool, cwd, after string, filters queryFilters, includeSystem bool) ([]string, []any, error) {
 	where := make([]string, 0, 4+len(filters.tools)+len(filters.cwds)+len(filters.afters))
 	params := make([]any, 0, cap(where))
 	if !includeSystem {
@@ -526,7 +591,7 @@ func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, i
 	if after != "" {
 		epoch, err := parseAfterFilter(after)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		where = append(where, "m.ts IS NOT NULL AND m.ts >= ?")
 		params = append(params, epoch)
@@ -542,13 +607,21 @@ func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, i
 	for _, value := range filters.afters {
 		epoch, err := parseAfterFilter(value)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		where = append(where, "m.ts IS NOT NULL AND m.ts >= ?")
 		params = append(params, epoch)
 	}
+	return where, params, nil
+}
+
+func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, includeSystem bool) (map[int64]searchMessage, error) {
+	where, params, err := searchFilterClauses(tool, cwd, after, filters, includeSystem)
+	if err != nil {
+		return nil, err
+	}
 	query := `SELECT m.id, s.tool, s.session_id, s.title, s.cwd, s.created, s.updated,
-		s.source_path, m.ts, m.role, m.text FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk`
+		s.source_path, m.ts, m.role FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -562,7 +635,7 @@ func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, i
 	for rows.Next() {
 		var row searchMessage
 		if err := rows.Scan(&row.id, &row.tool, &row.sessionID, &row.title, &row.cwd, &row.created,
-			&row.updated, &row.sourcePath, &row.ts, &row.role, &row.text); err != nil {
+			&row.updated, &row.sourcePath, &row.ts, &row.role); err != nil {
 			return nil, err
 		}
 		result[row.id] = row
@@ -570,78 +643,301 @@ func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, i
 	return result, rows.Err()
 }
 
-func atomMatches(text, value string) bool {
-	if value == "" {
-		return false
+func searchUniverseByIDs(db *sql.DB, ids []int64, tool, cwd, after string, filters queryFilters, includeSystem bool) (map[int64]searchMessage, error) {
+	result := make(map[int64]searchMessage, len(ids))
+	// SQLite's default variable limit is 32766; leave room for filters while
+	// keeping common result sets in a single index-driven query.
+	const chunkSize = 30000
+	for start := 0; start < len(ids); start += chunkSize {
+		end := minInt(len(ids), start+chunkSize)
+		where, params, err := searchFilterClauses(tool, cwd, after, filters, includeSystem)
+		if err != nil {
+			return nil, err
+		}
+		placeholders := make([]string, end-start)
+		idParams := make([]any, 0, end-start+len(params))
+		for i, id := range ids[start:end] {
+			placeholders[i] = "?"
+			idParams = append(idParams, id)
+		}
+		where = append([]string{"m.id IN (" + strings.Join(placeholders, ",") + ")"}, where...)
+		idParams = append(idParams, params...)
+		query := `SELECT m.id, s.tool, s.session_id, s.title, s.cwd, s.created, s.updated,
+			s.source_path, m.ts, m.role FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(where, " AND ") + " ORDER BY m.id"
+		rows, err := db.Query(query, idParams...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var row searchMessage
+			if err := rows.Scan(&row.id, &row.tool, &row.sessionID, &row.title, &row.cwd, &row.created,
+				&row.updated, &row.sourcePath, &row.ts, &row.role); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			result[row.id] = row
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return strings.Contains(strings.ToLower(text), strings.ToLower(value))
+	return result, nil
 }
 
-func atomCandidateSets(db *sql.DB, universe map[int64]searchMessage, atoms []queryAtom) (map[string]map[int64]struct{}, error) {
+func containsSearchPunctuation(value string) bool {
+	for _, r := range value {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// legacySearchTokens approximates unicode61's token boundaries for terms that
+// contain punctuation. In particular, session-finder matches adjacent tokens
+// in both "session-finder" and "/path/session-finder/", as the old FTS query
+// did, while plain CJK and word terms retain literal substring behavior.
+func legacySearchTokens(value string) []string {
+	lowered := strings.ToLower(value)
+	var tokens []string
+	start := -1
+	for i, r := range lowered {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			tokens = append(tokens, lowered[start:i])
+			start = -1
+		}
+	}
+	if start >= 0 {
+		tokens = append(tokens, lowered[start:])
+	}
+	return tokens
+}
+
+func sortedUniverseIDs(universe map[int64]searchMessage) []int64 {
+	ids := make([]int64, 0, len(universe))
+	for id := range universe {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func queryLikeCandidates(db *sql.DB, value, tool, cwd, after string, filters queryFilters, includeSystem bool) (map[int64]struct{}, error) {
+	where, filterParams, err := searchFilterClauses(tool, cwd, after, filters, includeSystem)
+	if err != nil {
+		return nil, err
+	}
+	where = append([]string{"m.text LIKE ? ESCAPE '\\'"}, where...)
+	params := make([]any, 0, len(filterParams)+1)
+	params = append(params, "%"+escapeLike(value)+"%")
+	params = append(params, filterParams...)
+	query := `SELECT m.id FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(where, " AND ") + " ORDER BY m.id LIMIT 50000"
+	rows, err := db.Query(query, params...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[int64]struct{})
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[id] = struct{}{}
+	}
+	return result, rows.Err()
+}
+
+func candidateIDsForTerm(db *sql.DB, value, tool, cwd, after string, filters queryFilters, includeSystem bool) (map[int64]struct{}, error) {
+	set := make(map[int64]struct{})
+	where, filterParams, err := searchFilterClauses(tool, cwd, after, filters, includeSystem)
+	if err != nil {
+		return nil, err
+	}
+	queries := []struct {
+		table string
+		match string
+	}{
+		{table: "messages_fts", match: `"` + strings.ReplaceAll(value, `"`, `""`) + `"`},
+	}
+	if utf8.RuneCountInString(value) >= 3 {
+		queries = append(queries, struct {
+			table string
+			match string
+		}{table: "messages_tri", match: `"` + strings.ReplaceAll(value, `"`, `""`) + `"`})
+	}
+	for _, candidate := range queries {
+		queryWhere := append([]string{"m.id IN (SELECT rowid FROM " + candidate.table + " WHERE " + candidate.table + " MATCH ?)"}, where...)
+		params := make([]any, 0, len(filterParams)+1)
+		params = append(params, candidate.match)
+		params = append(params, filterParams...)
+		query := `SELECT m.id FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(queryWhere, " AND ") + " ORDER BY m.id LIMIT 50000"
+		rows, err := db.Query(query, params...)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			set[id] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	// unicode61 can miss unspaced CJK, punctuation-delimited values, and
+	// short/edge trigrams. The fallback applies the same filters directly,
+	// avoiding a scan of unrelated messages.
+	if len(set) == 0 {
+		likeSet, err := queryLikeCandidates(db, value, tool, cwd, after, filters, includeSystem)
+		if err != nil {
+			return nil, err
+		}
+		for id := range likeSet {
+			set[id] = struct{}{}
+		}
+	}
+	return set, nil
+}
+
+func mapValues(values map[string]map[int64]struct{}) []map[int64]struct{} {
+	sets := make([]map[int64]struct{}, 0, len(values))
+	for _, set := range values {
+		sets = append(sets, set)
+	}
+	return sets
+}
+
+func unionCandidateIDs(sets []map[int64]struct{}) []int64 {
+	idsSet := make(map[int64]struct{})
+	for _, set := range sets {
+		for id := range set {
+			idsSet[id] = struct{}{}
+		}
+	}
+	ids := make([]int64, 0, len(idsSet))
+	for id := range idsSet {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func atomCandidateSets(db *sql.DB, tool, cwd, after string, filters queryFilters, includeSystem bool, atoms []queryAtom) (map[string]map[int64]struct{}, error) {
 	sets := make(map[string]map[int64]struct{}, len(atoms))
 	for _, atom := range atoms {
 		if _, exists := sets[atom.key]; exists {
 			continue
 		}
-		set := make(map[int64]struct{})
-		// Candidate retrieval uses all available indexes, but every candidate is
-		// checked with a literal, case-insensitive substring match below. This
-		// keeps unicode61 token boundaries, trigram's short-rune behavior, and
-		// LIKE wildcard escaping equivalent from a user's perspective.
-		queries := []struct {
-			table string
-			match string
-		}{
-			{table: "messages_fts", match: `"` + strings.ReplaceAll(atom.value, `"`, `""`) + `"`},
-		}
-		if utf8.RuneCountInString(atom.value) >= 3 {
-			queries = append(queries, struct {
-				table string
-				match string
-			}{table: "messages_tri", match: `"` + strings.ReplaceAll(atom.value, `"`, `""`) + `"`})
-		}
-		for _, candidate := range queries {
-			rows, err := db.Query("SELECT rowid FROM "+candidate.table+" WHERE "+candidate.table+" MATCH ?", candidate.match)
-			if err != nil {
-				continue
-			}
-			for rows.Next() {
-				var id int64
-				if err := rows.Scan(&id); err != nil {
-					rows.Close()
+		var set map[int64]struct{}
+		if !atom.phrase && containsSearchPunctuation(atom.value) {
+			// The legacy query path tokenized punctuation-delimited values and
+			// required every token in the same session. Keep all token matches,
+			// including matches that live in different messages, while avoiding
+			// unrelated messages from that session.
+			tokens := legacySearchTokens(atom.value)
+			seenTokens := make(map[string]bool, len(tokens))
+			tokenSets := make([]map[int64]struct{}, 0, len(tokens))
+			for _, token := range tokens {
+				if seenTokens[token] {
+					continue
+				}
+				seenTokens[token] = true
+				candidateSet, err := candidateIDsForTerm(db, token, tool, cwd, after, filters, includeSystem)
+				if err != nil {
 					return nil, err
 				}
-				if row, ok := universe[id]; ok && atomMatches(row.text, atom.value) {
-					set[id] = struct{}{}
+				tokenSets = append(tokenSets, candidateSet)
+			}
+			set = make(map[int64]struct{})
+			if len(tokenSets) == 0 {
+				var err error
+				set, err = queryLikeCandidates(db, atom.value, tool, cwd, after, filters, includeSystem)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				ids := unionCandidateIDs(tokenSets)
+				metadata, err := searchUniverseByIDs(db, ids, tool, cwd, after, filters, includeSystem)
+				if err != nil {
+					return nil, err
+				}
+				commonSessions := sessionSet(tokenSets[0], metadata)
+				for _, tokenSet := range tokenSets[1:] {
+					sessions := sessionSet(tokenSet, metadata)
+					for key := range commonSessions {
+						if _, ok := sessions[key]; !ok {
+							delete(commonSessions, key)
+						}
+					}
+				}
+				for _, tokenSet := range tokenSets {
+					for id := range tokenSet {
+						if row, ok := metadata[id]; ok {
+							if _, ok := commonSessions[sessionKey(row)]; ok {
+								set[id] = struct{}{}
+							}
+						}
+					}
 				}
 			}
-			rows.Close()
-		}
-		// FTS5 can miss CJK strings without spaces and short/edge trigrams.
-		// LIKE is escaped and only used as a candidate fallback; its result is
-		// still passed through atomMatches for exact literal semantics.
-		likeRows, err := db.Query(`SELECT id FROM messages WHERE text LIKE ? ESCAPE '\'`, "%"+escapeLike(atom.value)+"%")
-		if err != nil {
-			return nil, err
-		}
-		for likeRows.Next() {
-			var id int64
-			if err := likeRows.Scan(&id); err != nil {
-				likeRows.Close()
+		} else {
+			var err error
+			set, err = candidateIDsForTerm(db, atom.value, tool, cwd, after, filters, includeSystem)
+			if err != nil {
 				return nil, err
 			}
-			if row, ok := universe[id]; ok && atomMatches(row.text, atom.value) {
-				set[id] = struct{}{}
-			}
 		}
-		if err := likeRows.Err(); err != nil {
-			likeRows.Close()
-			return nil, err
-		}
-		likeRows.Close()
 		sets[atom.key] = set
 	}
 	return sets, nil
+}
+
+func loadMessageTexts(db *sql.DB, ids []int64) (map[int64]string, error) {
+	result := make(map[int64]string, len(ids))
+	const chunkSize = 500
+	for start := 0; start < len(ids); start += chunkSize {
+		end := minInt(len(ids), start+chunkSize)
+		placeholders := make([]string, end-start)
+		args := make([]any, end-start)
+		for i, id := range ids[start:end] {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		rows, err := db.Query("SELECT id, text FROM messages WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			var text string
+			if err := rows.Scan(&id, &text); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			result[id] = text
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return result, nil
 }
 
 func manualSnippetForTerms(text string, terms []string, maxChars int) string {
@@ -699,14 +995,6 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 	if err != nil {
 		return nil, err
 	}
-	universe, err := searchUniverse(db, tool, cwd, after, filters, includeSystem)
-	if err != nil {
-		return nil, err
-	}
-	allIDs := make(map[int64]struct{}, len(universe))
-	for id := range universe {
-		allIDs[id] = struct{}{}
-	}
 	var positiveAtoms []queryAtom
 	collectQueryAtoms(expr, false, &positiveAtoms)
 	atoms := make([]queryAtom, 0, len(positiveAtoms))
@@ -735,11 +1023,26 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 		allExprAtoms(node.right)
 	}
 	allExprAtoms(expr)
-	candidateSets, err := atomCandidateSets(db, universe, atoms)
+	candidateSets, err := atomCandidateSets(db, tool, cwd, after, filters, includeSystem, atoms)
 	if err != nil {
 		return nil, err
 	}
-	matchedIDs := evalQuery(expr, allIDs, candidateSets)
+	candidateIDs := unionCandidateIDs(mapValues(candidateSets))
+	var universe map[int64]searchMessage
+	if expr == nil || exprContainsNot(expr) {
+		universe, err = searchUniverse(db, tool, cwd, after, filters, includeSystem)
+	} else {
+		universe, err = searchUniverseByIDs(db, candidateIDs, tool, cwd, after, filters, includeSystem)
+	}
+	if err != nil {
+		return nil, err
+	}
+	allIDs := make(map[int64]struct{}, len(universe))
+	for id := range universe {
+		allIDs[id] = struct{}{}
+	}
+	texts := make(map[int64]string)
+	matchedIDs := evalQuery(expr, allIDs, universe, candidateSets)
 	if len(matchedIDs) == 0 {
 		return []SearchResult{}, nil
 	}
@@ -828,12 +1131,29 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 			termsForSnippet = append(termsForSnippet, atom.value)
 		}
 	}
-	for i := range results {
-		group := groups[results[i].Tool+"\x00"+results[i].SessionID]
+	snippetIDs := make([]int64, 0)
+	for _, result := range results {
+		group := groups[result.Tool+"\x00"+result.SessionID]
 		sort.Slice(group.ids, func(a, b int) bool { return group.ids[a] < group.ids[b] })
 		for _, id := range group.ids {
-			row := universe[id]
-			snippet := manualSnippetForTerms(row.text, termsForSnippet, 200)
+			if _, ok := texts[id]; !ok {
+				snippetIDs = append(snippetIDs, id)
+			}
+		}
+	}
+	if len(snippetIDs) > 0 {
+		moreTexts, err := loadMessageTexts(db, snippetIDs)
+		if err != nil {
+			return nil, err
+		}
+		for id, text := range moreTexts {
+			texts[id] = text
+		}
+	}
+	for i := range results {
+		group := groups[results[i].Tool+"\x00"+results[i].SessionID]
+		for _, id := range group.ids {
+			snippet := manualSnippetForTerms(texts[id], termsForSnippet, 200)
 			if snippet != "" && !containsString(results[i].Snippets, snippet) {
 				results[i].Snippets = append(results[i].Snippets, snippet)
 			}
