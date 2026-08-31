@@ -96,7 +96,10 @@ The installer updates these user-level locations:
 The generated hooks are intentionally fail-open and detached from the host
 process. They ignore lifecycle JSON because the compensation scan discovers
 all indexed sessions that do not already have a candidate. Candidate storage
-uses the session/tool identity to make repeated lifecycle events harmless.
+uses the session/tool identity to make repeated lifecycle events harmless. A
+short-lived lock records its owner PID and start time, refuses to reclaim a
+live owner, and reclaims a dead or malformed owner only after ten minutes; an
+unexpected lock-file error simply skips that scan.
 
 ### Manual installation
 

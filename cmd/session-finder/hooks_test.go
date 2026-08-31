@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrintVersionFormat(t *testing.T) {
@@ -104,6 +106,17 @@ func TestInstallHooksAllPreservesConfigAndIsIdempotent(t *testing.T) {
 	if string(opencodeData) != opencodePlugin || !strings.Contains(string(opencodeData), "session.idle") {
 		t.Fatalf("OpenCode plugin mismatch: %q", opencodeData)
 	}
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	manualPlugin, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "..", "..", "hooks", "opencode-session-idle.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(opencodeData, manualPlugin) {
+		t.Fatalf("generated OpenCode plugin differs from manual asset")
+	}
 
 	if _, err := installHooksAt(home, hookToolAll); err != nil {
 		t.Fatal(err)
@@ -162,6 +175,83 @@ func TestSessionEndHookExitsWhenBinaryMissing(t *testing.T) {
 	cmd.Stdin = strings.NewReader(`{"session_id":"ignored"}`)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("session-end hook error = %v", err)
+	}
+}
+
+func TestHookLockReclaimsStaleOwner(t *testing.T) {
+	root := t.TempDir()
+	fakeBin := filepath.Join(root, "bin")
+	if err := os.Mkdir(fakeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "invoked")
+	fakeSessionFinder := filepath.Join(fakeBin, "session-finder")
+	if err := os.WriteFile(fakeSessionFinder, []byte("#!/bin/sh\nprintf invoked > \"$HOOK_MARKER\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	lockDir := filepath.Join(root, "session-finder-extract.lock")
+	if err := os.Mkdir(lockDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(-11 * time.Minute).Unix()
+	owner := fmt.Sprintf("99999999\n%d\n", started)
+	if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte(owner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMPDIR", root)
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOOK_MARKER", marker)
+	if err := exec.Command("/bin/sh", "-c", hookLockBody).Run(); err != nil {
+		t.Fatalf("stale lock command failed: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("stale lock did not run extraction: %v", err)
+	}
+	if _, err := os.Stat(lockDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale lock directory remains: %v", err)
+	}
+}
+
+func TestHookLockKeepsLiveOwner(t *testing.T) {
+	root := t.TempDir()
+	fakeBin := filepath.Join(root, "bin")
+	if err := os.Mkdir(fakeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "invoked")
+	fakeSessionFinder := filepath.Join(fakeBin, "session-finder")
+	if err := os.WriteFile(fakeSessionFinder, []byte("#!/bin/sh\nprintf invoked > \"$HOOK_MARKER\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	lockDir := filepath.Join(root, "session-finder-extract.lock")
+	if err := os.Mkdir(lockDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(-11 * time.Minute).Unix()
+	owner := fmt.Sprintf("%d\n%d\n", os.Getpid(), started)
+	ownerPath := filepath.Join(lockDir, "owner")
+	if err := os.WriteFile(ownerPath, []byte(owner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("TMPDIR", root)
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOOK_MARKER", marker)
+	if err := exec.Command("/bin/sh", "-c", hookLockBody).Run(); err != nil {
+		t.Fatalf("live lock command failed: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("live owner lock was reclaimed: %v", err)
+	}
+	got, err := os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatalf("live owner lock was removed: %v", err)
+	}
+	if string(got) != owner {
+		t.Fatalf("live owner metadata changed: got %q, want %q", got, owner)
 	}
 }
 
