@@ -22,7 +22,7 @@ builds:
       - goos: linux
         goarch: arm64
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
 
 archives:
   - id: default
@@ -34,6 +34,7 @@ archives:
     wrap_in_directory: false
     files:
       - README.md
+      - hooks/**
 
 checksum:
   name_template: checksums.txt
