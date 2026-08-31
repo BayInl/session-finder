@@ -1,7 +1,9 @@
 package decisions
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
 )
 
@@ -150,5 +153,63 @@ func TestRunExtractJudgeOnRejectsOfflineConfiguration(t *testing.T) {
 	err := runExtract(io.Discard, []string{"--db", filepath.Join(t.TempDir(), "index.db"), "--judge", "on", "--json"})
 	if err == nil || !strings.Contains(err.Error(), "judge=on requires a configured online llm provider") {
 		t.Fatalf("judge=on error = %v", err)
+	}
+}
+
+func TestRunExtractSessionPrefixMatchesSQLite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	db, err := index.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.InitializeSchema(db); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	for _, session := range []struct {
+		id   string
+		text string
+	}{
+		{id: "prefix-session-001", text: "Choose SQLite over Postgres because it keeps the MVP local."},
+		{id: "other-session-001", text: "Choose Redis over Memcached because it is already deployed."},
+	} {
+		result, err := db.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, source_path) VALUES (?, ?, ?, ?, ?)`,
+			"codex", session.id, "/tmp/project", "", "/tmp/"+session.id+".jsonl")
+		if err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		sessionPK, err := result.LastInsertId()
+		if err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO messages(session_pk, role, ts, text) VALUES (?, ?, ?, ?)`, sessionPK, "user", 1, session.text); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := runExtract(&output, []string{
+		"--db", dbPath, "--session", "prefix-session", "--judge", "off", "--json",
+	}); err != nil {
+		t.Fatalf("runExtract() = %v", err)
+	}
+	var result struct {
+		Count      int                 `json:"count"`
+		Candidates []DecisionCandidate `json:"candidates"`
+	}
+	if err := json.NewDecoder(&output).Decode(&result); err != nil {
+		t.Fatalf("decode output: %v; output=%s", err, output.String())
+	}
+	if result.Count != 1 || len(result.Candidates) != 1 {
+		t.Fatalf("prefix result = %#v, want one matching candidate", result)
+	}
+	if result.Candidates[0].Provenance.SessionID != "prefix-session-001" {
+		t.Fatalf("matched session = %q, want prefix-session-001", result.Candidates[0].Provenance.SessionID)
 	}
 }

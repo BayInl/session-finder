@@ -245,7 +245,7 @@ func loadMessages(db *sql.DB, sessionID string) ([]record.MessageRecord, error) 
 	where := ""
 	args := []any{}
 	if strings.TrimSpace(sessionID) != "" {
-		where = " WHERE s.session_id = ? OR s.session_id LIKE ? ESCAPE '\\\\'"
+		where = " WHERE s.session_id = ? OR s.session_id LIKE ? ESCAPE '\\'"
 		prefix := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(sessionID, "\\", "\\\\"), "%", "\\%"), "_", "\\_")
 		args = append(args, sessionID, prefix+"%")
 	}
