@@ -277,8 +277,19 @@ func TestSessionEndHookRunsExtractionWithMalformedStaleOwner(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := os.Stat(lockDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("reclaimed lock directory remains: %v", err)
+	cleanupDeadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := os.Stat(lockDir)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stat reclaimed lock directory: %v", err)
+		}
+		if time.Now().After(cleanupDeadline) {
+			t.Fatal("reclaimed lock directory was not cleaned up")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
