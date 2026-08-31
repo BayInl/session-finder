@@ -65,10 +65,12 @@ supports:
 
 ### Output modes
 
-In a terminal, results print as compact two-line entries; piped output is
-single-line. Use `--verbose` for full result cards, `--json` for
-machine-readable output. Colors follow `NO_COLOR`; column width adapts to the
-terminal. `--include-system` (alias `--all`) includes system/noise records.
+In a terminal, each hit shows the session header plus the last human/assistant
+round (wrapped to the terminal width). Piped output stays a single compact line
+per session. Use `--verbose` for full result cards, `--json` for
+machine-readable output (`last_user` / `last_assistant` are included when
+present). Colors follow `NO_COLOR`; column width adapts to the terminal.
+`--include-system` (alias `--all`) includes system/noise records.
 
 Show the message stream for a full session ID or unique ID prefix:
 

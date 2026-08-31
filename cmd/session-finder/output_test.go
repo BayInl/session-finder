@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/BayInl/session-finder/internal/ui"
 )
 
 func TestTruncateCellsUsesTerminalWidth(t *testing.T) {
@@ -47,12 +50,32 @@ func TestRelativeTimeInvalid(t *testing.T) {
 }
 
 func TestColorTextHonorsNoColor(t *testing.T) {
+	var buf bytes.Buffer
 	t.Setenv("NO_COLOR", "1")
-	if got := colorText("1", "text"); got != "text" {
-		t.Fatalf("colorText with NO_COLOR = %q", got)
+	t.Setenv("CLICOLOR_FORCE", "")
+	if got := ui.LegacySGR(&buf, "1", "text"); got != "text" {
+		t.Fatalf("NO_COLOR=1 = %q", got)
 	}
 	t.Setenv("NO_COLOR", "")
-	if got := colorText("1", "text"); got != "\x1b[1mtext\x1b[0m" {
-		t.Fatalf("colorText = %q", got)
+	t.Setenv("CLICOLOR_FORCE", "")
+	if got := ui.LegacySGR(&buf, "1", "text"); got != "text" {
+		t.Fatalf("empty NO_COLOR non-TTY = %q", got)
+	}
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "1")
+	if got := ui.LegacySGR(&buf, "1", "text"); got != "\x1b[1mtext\x1b[0m" {
+		t.Fatalf("CLICOLOR_FORCE = %q", got)
+	}
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+	t.Setenv("TERM", "dumb")
+	if got := ui.LegacySGR(&buf, "1", "text"); got != "text" {
+		t.Fatalf("TERM=dumb = %q", got)
+	}
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "1")
+	t.Setenv("TERM", "dumb")
+	if got := ui.LegacySGR(&buf, "1", "text"); got != "\x1b[1mtext\x1b[0m" {
+		t.Fatalf("TERM=dumb FORCE = %q", got)
 	}
 }

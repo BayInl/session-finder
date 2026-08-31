@@ -2,7 +2,6 @@ package skill
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"github.com/BayInl/session-finder/internal/extract"
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/llm"
+	"github.com/BayInl/session-finder/internal/ui"
 )
 
 func init() {
@@ -54,7 +54,7 @@ func Commands() []string {
 }
 
 func printSkillUsage() {
-	fmt.Println("usage: session-finder skill <extract|review|publish|disable|delete|list> [flags]")
+	ui.PrintUsage(os.Stdout, "usage: session-finder skill <extract|review|publish|disable|delete|list> [flags]", "", nil, nil)
 }
 
 func runExtract(argv []string) error {
@@ -70,10 +70,13 @@ func runExtract(argv []string) error {
 	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
 	judgeLimit := set.Int("judge-limit", 0, "maximum candidate judge calls (0 means unlimited)")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder skill extract [flags]", "Extract skill candidates from sessions.", []ui.FlagGroup{
+		{Title: "Filter", Names: []string{"session", "cwd", "after", "pending"}},
+		{Title: "Judge", Names: []string{"judge", "judge-limit"}},
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db", "candidate-db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 0 {
@@ -105,10 +108,10 @@ func runExtract(argv []string) error {
 		if err != nil {
 			return err
 		}
-		return printJSONOrText(*asJSON, struct {
+		return printJSONOrStyled(*asJSON, struct {
 			Pending    []PendingSession    `json:"pending"`
 			Candidates []extract.Candidate `json:"candidates"`
-		}{pendingSessions, candidates}, fmt.Sprintf("queued %d of %d pending sessions", len(candidates), len(pendingSessions)))
+		}{pendingSessions, candidates}, fmt.Sprintf("queued %d of %d pending sessions", len(candidates), len(pendingSessions)), ui.TokenInfo)
 	}
 	db, err := openIndexForSkill(*indexDB)
 	if err != nil {
@@ -148,10 +151,12 @@ func runReview(argv []string) error {
 	trigger := set.String("trigger", "", "replacement trigger for edit")
 	instructions := set.String("instructions", "", "replacement instructions for edit")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder skill review <id> [flags]", "Review a skill candidate.", []ui.FlagGroup{
+		{Title: "Review", Names: []string{"action", "evidence", "note", "slug", "trigger", "instructions"}},
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 1 {
@@ -179,10 +184,12 @@ func runPublish(argv []string) error {
 	project := set.String("project", "", "project directory for --target project")
 	root := set.String("skills-root", "", "explicit skills root override")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder skill publish <id> [flags]", "Publish an approved skill candidate.", []ui.FlagGroup{
+		{Title: "Publish", Names: []string{"target", "home", "project", "skills-root"}},
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 1 {
@@ -202,10 +209,11 @@ func runDisable(argv []string) error {
 	set.SetOutput(os.Stderr)
 	dbPath := set.String("db", "", "path to the candidate SQLite database")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder skill disable <id> [flags]", "Disable a skill candidate.", []ui.FlagGroup{
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 1 {
@@ -223,10 +231,11 @@ func runDelete(argv []string) error {
 	set.SetOutput(os.Stderr)
 	dbPath := set.String("db", "", "path to the candidate SQLite database")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder skill delete <id> [flags]", "Delete a skill candidate.", []ui.FlagGroup{
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 1 {
@@ -245,10 +254,12 @@ func runList(argv []string) error {
 	dbPath := set.String("db", "", "path to the candidate SQLite database")
 	status := set.String("status", "", "candidate status filter")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder skill list [flags]", "List skill candidates.", []ui.FlagGroup{
+		{Title: "Filter", Names: []string{"status"}},
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 0 {
@@ -266,6 +277,18 @@ func runList(argv []string) error {
 	if *asJSON {
 		return printJSON(candidates)
 	}
+	if ui.IsTTY(os.Stdout) {
+		rows := make([][]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			rows = append(rows, []string{candidate.ID, candidate.Status, candidate.Title, candidate.SessionID})
+		}
+		ui.RenderTable(os.Stdout, ui.Table{
+			Headers:   []string{"ID", "STATUS", "TITLE", "SESSION_ID"},
+			Rows:      rows,
+			StatusCol: 1,
+		})
+		return nil
+	}
 	for _, candidate := range candidates {
 		fmt.Printf("%s\t%s\t%s\t%s\n", candidate.ID, candidate.Status, candidate.Title, candidate.SessionID)
 	}
@@ -273,18 +296,27 @@ func runList(argv []string) error {
 }
 
 func printJSONOrText(asJSON bool, value any, text string) error {
+	return printJSONOrStyled(asJSON, value, text, ui.TokenSuccess)
+}
+
+func printJSONOrStyled(asJSON bool, value any, text string, token ui.Token) error {
 	if asJSON {
 		return printJSON(value)
 	}
-	fmt.Println(text)
+	printStatusLine(text, token)
 	return nil
 }
 
+func printStatusLine(text string, token ui.Token) {
+	if ui.IsTTY(os.Stdout) {
+		fmt.Fprintln(os.Stdout, ui.NewTheme(os.Stdout).Style(token).Render(text))
+		return
+	}
+	fmt.Println(text)
+}
+
 func printJSON(value any) error {
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
+	return ui.WriteJSON(os.Stdout, value)
 }
 
 func openIndexForSkill(path string) (*sql.DB, error) {

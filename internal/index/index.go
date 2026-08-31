@@ -803,8 +803,17 @@ func indexOpencode(db *sql.DB, spec record.SourceSpec, mtime float64, size int64
 	return sessions, messages, nil
 }
 
+// Progress is called with total==0 before Discover, then total==len(specs)
+// (done==0), then once per spec (done is 1-based). err is a per-source
+// warning, not fatal. IndexAll does not draw a bar or spinner.
+type Progress func(done, total int, spec record.SourceSpec, err error)
+
 // IndexAll builds or incrementally updates the index.
 func IndexAll(full bool, dbPath string) (Summary, error) {
+	return IndexAllWithProgress(full, dbPath, nil)
+}
+
+func IndexAllWithProgress(full bool, dbPath string, progress Progress) (Summary, error) {
 	if dbPath == "" {
 		dbPath = DefaultIndexPath
 	}
@@ -824,29 +833,39 @@ func IndexAll(full bool, dbPath string) (Summary, error) {
 			return Summary{}, err
 		}
 	}
+	if progress != nil {
+		progress(0, 0, record.SourceSpec{}, nil)
+	}
 	specs, err := parsers.Discover()
 	if err != nil {
 		return Summary{}, err
 	}
+	if progress != nil {
+		progress(0, len(specs), record.SourceSpec{}, nil)
+	}
 	stats := SourceStats{}
-	for _, spec := range specs {
+	for i, spec := range specs {
+		var indexErr error
 		mtime, size := SourceSignature(spec)
 		if spec.Tool == "opencode" {
 			stats.Processed++
 			if _, _, err := indexOpencode(db, spec, mtime, size); err != nil {
 				stats.Errors++
-				fmt.Fprintf(os.Stderr, "warning: failed to index %s: %v\n", spec.Path, err)
+				indexErr = err
 			}
-			continue
-		}
-		if !full && sourceUnchanged(db, spec, mtime, size) {
+		} else if !full && sourceUnchanged(db, spec, mtime, size) {
 			stats.Unchanged++
-			continue
+		} else {
+			stats.Processed++
+			if _, _, err := indexSource(db, spec, mtime, size); err != nil {
+				stats.Errors++
+				indexErr = err
+			}
 		}
-		stats.Processed++
-		if _, _, err := indexSource(db, spec, mtime, size); err != nil {
-			stats.Errors++
-			fmt.Fprintf(os.Stderr, "warning: failed to index %s: %v\n", spec.Path, err)
+		if progress != nil {
+			progress(i+1, len(specs), spec, indexErr)
+		} else if indexErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to index %s: %v\n", spec.Path, indexErr)
 		}
 	}
 	if full {
@@ -986,9 +1005,11 @@ type SearchResult struct {
 	CWD          string   `json:"cwd"`
 	Created      string   `json:"created"`
 	Updated      string   `json:"updated"`
-	MessageCount int      `json:"message_count"`
-	Snippets     []string `json:"snippets"`
-	SourcePaths  []string `json:"source_paths"`
+	MessageCount  int      `json:"message_count"`
+	Snippets      []string `json:"snippets"`
+	SourcePaths   []string `json:"source_paths"`
+	LastUser      string   `json:"last_user,omitempty"`
+	LastAssistant string   `json:"last_assistant,omitempty"`
 	matchedTerms map[string]bool
 	messageIDs   []int64
 	createdEpoch *float64

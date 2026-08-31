@@ -1164,6 +1164,9 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 		results[i].matchedTerms = nil
 		results[i].updatedEpoch = nil
 	}
+	if err := attachLastRounds(db, results); err != nil {
+		return nil, err
+	}
 	return results, nil
 }
 

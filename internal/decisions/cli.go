@@ -1,7 +1,6 @@
 package decisions
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,6 +15,7 @@ import (
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/llm"
 	"github.com/BayInl/session-finder/internal/record"
+	"github.com/BayInl/session-finder/internal/ui"
 )
 
 // RegisterCommand registers the decisions command family in the shared CLI
@@ -43,10 +43,9 @@ func RunCommand(argv []string) error {
 }
 
 func printUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage: session-finder decisions <extract|list|review> [flags]")
-	fmt.Fprintln(writer, "  extract [--session ID] [--db PATH] [--judge off|auto|on] [--judge-limit N] [--json]")
-	fmt.Fprintln(writer, "  list [--json] [--status STATUS] [--session ID] [--db PATH]")
-	fmt.Fprintln(writer, "  review [--db PATH] [--id ID] [--action approve|reject|defer|edit]")
+	ui.PrintUsage(writer, "usage: session-finder decisions <extract|list|review> [flags]",
+		"  extract [--session ID] [--db PATH] [--judge off|auto|on] [--judge-limit N] [--json]\n  list [--json] [--status STATUS] [--session ID] [--db PATH]\n  review [--db PATH] [--id ID] [--action approve|reject|defer|edit]",
+		nil, nil)
 }
 
 func runExtract(writer io.Writer, argv []string) error {
@@ -57,10 +56,13 @@ func runExtract(writer io.Writer, argv []string) error {
 	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
 	judgeLimit := set.Int("judge-limit", 0, "maximum candidate judge calls (0 means unlimited)")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder decisions extract [flags]", "Extract decision candidates from sessions.", []ui.FlagGroup{
+		{Title: "Filter", Names: []string{"session"}},
+		{Title: "Judge", Names: []string{"judge", "judge-limit"}},
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 0 {
@@ -122,10 +124,12 @@ func runList(writer io.Writer, argv []string) error {
 	dbPath := set.String("db", "", "path to SQLite index database")
 	limit := set.Int("limit", 0, "maximum decisions to show")
 	asJSON := set.Bool("json", false, "emit JSON")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder decisions list [flags]", "List recorded decisions.", []ui.FlagGroup{
+		{Title: "Filter", Names: []string{"status", "session", "limit"}},
+		{Title: "Output", Names: []string{"json"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 0 {
@@ -146,6 +150,18 @@ func runList(writer io.Writer, argv []string) error {
 			Decisions []Decision `json:"decisions"`
 		}{Count: len(decisions), Decisions: decisions})
 	}
+	if ui.IsTTY(writer) {
+		rows := make([][]string, 0, len(decisions))
+		for _, decision := range decisions {
+			rows = append(rows, []string{decision.ID, decision.Status, decision.Chosen, decision.Context})
+		}
+		ui.RenderTable(writer, ui.Table{
+			Headers:   []string{"ID", "STATUS", "CHOSEN", "CONTEXT"},
+			Rows:      rows,
+			StatusCol: 1,
+		})
+		return nil
+	}
 	for _, decision := range decisions {
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", decision.ID, decision.Status, decision.Chosen, decision.Context)
 	}
@@ -161,10 +177,11 @@ func runReview(reader io.Reader, writer io.Writer, argv []string) error {
 	actor := set.String("actor", "reviewer", "audit actor")
 	reason := set.String("reason", "", "audit reason")
 	confirmed := set.Bool("confirm", false, "confirm an edit")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder decisions review [flags]", "Review a recorded decision.", []ui.FlagGroup{
+		{Title: "Review", Names: []string{"id", "action", "actor", "reason", "confirm"}},
+		{Title: "Database", Names: []string{"db"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*id) == "" || strings.TrimSpace(*action) == "" {
@@ -195,15 +212,7 @@ func runReview(reader io.Reader, writer io.Writer, argv []string) error {
 }
 
 func encodeJSON(writer io.Writer, value any) error {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return err
-	}
-	_, err := writer.Write(buffer.Bytes())
-	return err
+	return ui.WriteJSON(writer, value)
 }
 
 type transcriptIdentity struct {

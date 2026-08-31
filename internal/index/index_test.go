@@ -93,6 +93,9 @@ func TestSearchAndShow(t *testing.T) {
 	if len(results[0].Snippets) != 2 {
 		t.Fatalf("snippets = %#v, want two visible messages", results[0].Snippets)
 	}
+	if results[0].LastUser != "find alpha here" || results[0].LastAssistant != "alpha answer" {
+		t.Fatalf("last round = user %q assistant %q", results[0].LastUser, results[0].LastAssistant)
+	}
 	allResults, err := Search(db, "alpha", "", "", "", 20, true)
 	if err != nil {
 		t.Fatal(err)

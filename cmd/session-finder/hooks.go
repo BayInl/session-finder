@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/BayInl/session-finder/internal/ui"
 )
 
 const (
@@ -145,17 +147,17 @@ func runHooks(argv []string) error {
 }
 
 func printHooksUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage: session-finder hooks install [--tool claude|kimi|opencode|all]")
+	ui.PrintUsage(writer, "usage: session-finder hooks install [--tool claude|kimi|opencode|all]", "", nil, nil)
 }
 
 func runHooksInstall(argv []string) error {
 	set := flag.NewFlagSet("hooks install", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	tool := set.String("tool", hookToolAll, "tool to configure: claude, kimi, opencode, or all")
-	if err := set.Parse(argv); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	ui.AttachUsage(set, "usage: session-finder hooks install [flags]", "Install session-idle extraction hooks.", []ui.FlagGroup{
+		{Title: "Filter", Names: []string{"tool"}},
+	})
+	if err := ui.Parse(set, argv); err != nil {
 		return err
 	}
 	if set.NArg() != 0 {
@@ -166,9 +168,18 @@ func runHooksInstall(argv []string) error {
 		return err
 	}
 	for _, path := range installed {
-		fmt.Println("installed hook:", path)
+		printInstalledHook(path)
 	}
 	return nil
+}
+
+func printInstalledHook(path string) {
+	if ui.IsTTY(os.Stdout) {
+		theme := ui.NewTheme(os.Stdout)
+		fmt.Fprintf(os.Stdout, "%s %s\n", theme.Style(ui.TokenSuccess).Render("installed hook:"), path)
+		return
+	}
+	fmt.Println("installed hook:", path)
 }
 
 func installHooks(tool string) ([]string, error) {
