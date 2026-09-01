@@ -83,7 +83,7 @@ func TestSearchJSONUnchanged(t *testing.T) {
 	if got.SessionID != "session-1" || got.Tool != "codex" {
 		t.Fatalf("result = %#v", got)
 	}
-	if got.Title != "Question" || got.CWD != "/workspace/project" || got.MessageCount != 1 {
+	if got.Title != "Question" || got.CWD != "/workspace/project" || got.MessageCount != 1 || got.MatchCount != 1 {
 		t.Fatalf("result fields = %#v", got)
 	}
 	if got.Created == "" || got.Updated == "" || len(got.SourcePaths) == 0 {
@@ -94,7 +94,7 @@ func TestSearchJSONUnchanged(t *testing.T) {
 	}
 	for _, key := range []string{
 		`"query"`, `"count"`, `"results"`, `"tool"`, `"session_id"`, `"title"`,
-		`"cwd"`, `"created"`, `"updated"`, `"message_count"`, `"snippets"`, `"source_paths"`,
+		`"cwd"`, `"created"`, `"updated"`, `"message_count"`, `"match_count"`, `"snippets"`, `"source_paths"`,
 	} {
 		if !strings.Contains(out, key) {
 			t.Fatalf("JSON missing %s: %s", key, out)

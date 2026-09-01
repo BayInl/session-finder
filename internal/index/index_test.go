@@ -83,7 +83,10 @@ func TestSearchAndShow(t *testing.T) {
 		VALUES ('codex', 'session-1', '/workspace/project', 'Question', 1704067200, 1704067300, '/source/one');
 	INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067201, 'find alpha here');
 	INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'assistant', 1704067202, 'alpha answer');
-	INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'system', 1704067203, '<system-reminder>alpha hidden');`)
+	INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'system', 1704067203, '<system-reminder>alpha hidden');
+	INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'session-1', '/workspace/project', 'Question', 1704067200, 1704067300, '/source/two');
+	INSERT INTO messages(session_pk, role, ts, text) VALUES (2, 'assistant', 1704067204, 'unmatched extra');`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,20 +94,21 @@ func TestSearchAndShow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || results[0].SessionID != "session-1" || results[0].MessageCount != 2 {
+	if len(results) != 1 || results[0].SessionID != "session-1" ||
+		results[0].MessageCount != 4 || results[0].MatchCount != 2 {
 		t.Fatalf("unexpected search results: %#v", results)
 	}
 	if len(results[0].Snippets) != 2 {
 		t.Fatalf("snippets = %#v, want two visible messages", results[0].Snippets)
 	}
-	if results[0].LastUser != "find alpha here" || results[0].LastAssistant != "alpha answer" {
+	if results[0].LastUser != "find alpha here" || results[0].LastAssistant != "unmatched extra" {
 		t.Fatalf("last round = user %q assistant %q", results[0].LastUser, results[0].LastAssistant)
 	}
 	allResults, err := Search(db, "alpha", "", "", "", 20, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(allResults) != 1 || allResults[0].MessageCount != 3 {
+	if len(allResults) != 1 || allResults[0].MessageCount != 4 || allResults[0].MatchCount != 3 {
 		t.Fatalf("--all search results: %#v", allResults)
 	}
 	rows, err := Show(db, "session-", "user", 1)
@@ -114,6 +118,22 @@ func TestSearchAndShow(t *testing.T) {
 	want := []ShowRow{{Tool: "codex", SessionID: "session-1", Title: "Question", CWD: "/workspace/project", Created: "2024-01-01T00:00:00Z", Updated: "2024-01-01T00:01:40Z", Role: "user", Timestamp: "2024-01-01T00:00:01Z", Text: "find alpha here"}}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("show rows = %#v, want %#v", rows, want)
+	}
+}
+
+func TestSourceSignatureIncludesDerivedGrokSummary(t *testing.T) {
+	root := t.TempDir()
+	chatPath := filepath.Join(root, "chat_history.jsonl")
+	summaryPath := filepath.Join(root, "summary.json")
+	if err := os.WriteFile(chatPath, []byte("chat"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(summaryPath, []byte("summary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, size := SourceSignature(record.SourceSpec{Tool: "grok", Path: chatPath})
+	if size != int64(len("chat")+len("summary")) {
+		t.Fatalf("SourceSignature size = %d, want %d", size, len("chat")+len("summary"))
 	}
 }
 
@@ -139,7 +159,7 @@ func TestIndexSourcePropagatesGrokMetadataSQLError(t *testing.T) {
 		BEGIN SELECT RAISE(FAIL, 'metadata rejected'); END`); err != nil {
 		t.Fatal(err)
 	}
-	spec := record.SourceSpec{Tool: "grok", Path: chatPath, AuxiliaryPath: []string{summaryPath}}
+	spec := record.SourceSpec{Tool: "grok", Path: chatPath}
 	_, _, err = indexSource(db, spec, 1, 1)
 	if err == nil || !strings.Contains(err.Error(), "metadata rejected") {
 		t.Fatalf("indexSource error = %v, want metadata rejection", err)

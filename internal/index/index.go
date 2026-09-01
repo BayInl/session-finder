@@ -294,7 +294,10 @@ func Clear(db *sql.DB) error {
 
 // SourceSignature returns max mtime and total size over a source's files.
 func SourceSignature(spec record.SourceSpec) (float64, int64) {
-	paths := append([]string{spec.Path}, spec.AuxiliaryPath...)
+	paths := []string{spec.Path}
+	if spec.Tool == "grok" {
+		paths = append(paths, filepath.Join(filepath.Dir(spec.Path), "summary.json"))
+	}
 	if spec.Tool == "opencode" {
 		paths = append(paths, spec.Path+"-wal", spec.Path+"-shm")
 	}
@@ -456,7 +459,7 @@ func getOrCreateSession(tx *sql.Tx, cache map[string]*sessionState, msg record.M
 	if state == nil {
 		title := msg.Title
 		if title == "" && msg.Role == "user" {
-			title = parsers.TitleFromText(msg.Text, 120)
+			title = parsers.TitleFromText(msg.Text)
 		}
 		result, err := tx.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`, msg.Tool, msg.SessionID, msg.CWD, title, timestampValue(stamp), timestampValue(stamp), msg.SourcePath)
@@ -479,7 +482,7 @@ func getOrCreateSession(tx *sql.Tx, cache map[string]*sessionState, msg record.M
 		state.title = msg.Title
 	}
 	if state.title == "" && msg.Role == "user" {
-		state.title = parsers.TitleFromText(msg.Text, 120)
+		state.title = parsers.TitleFromText(msg.Text)
 	}
 	state.created = mergeMin(state.created, stamp)
 	state.updated = mergeMax(state.updated, stamp)
@@ -581,7 +584,7 @@ func indexSource(db *sql.DB, spec record.SourceSpec, mtime float64, size int64) 
 		_ = tx.Rollback()
 		return 0, 0, err
 	}
-	if spec.Tool == "grok" && len(spec.AuxiliaryPath) > 0 {
+	if spec.Tool == "grok" {
 		if err = updateGrokMetadata(tx, spec); err != nil {
 			_ = tx.Rollback()
 			return 0, 0, err
@@ -600,8 +603,8 @@ func indexSource(db *sql.DB, spec record.SourceSpec, mtime float64, size int64) 
 func updateGrokMetadata(tx *sql.Tx, spec record.SourceSpec) error {
 	// The parser already obtains cwd/title/created. Summary updated_at is the
 	// only metadata not present in chat_history records, so merge all fields as
-	// Python does without failing indexing on malformed auxiliary JSON.
-	summary := readSummary(spec.AuxiliaryPath[0])
+	// Python does without failing indexing on malformed summary JSON.
+	summary := readSummary(filepath.Join(filepath.Dir(spec.Path), "summary.json"))
 	info := map[string]any{}
 	if nested, ok := summary["info"].(map[string]any); ok {
 		info = nested
@@ -914,6 +917,7 @@ type SearchResult struct {
 	Created       string   `json:"created"`
 	Updated       string   `json:"updated"`
 	MessageCount  int      `json:"message_count"`
+	MatchCount    int      `json:"match_count"`
 	Snippets      []string `json:"snippets"`
 	SourcePaths   []string `json:"source_paths"`
 	LastUser      string   `json:"last_user,omitempty"`

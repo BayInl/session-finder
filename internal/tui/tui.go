@@ -72,30 +72,6 @@ func Run(cfg Config) error {
 	return err
 }
 
-func HitsFromResults(results []index.SearchResult) []ui.SearchHit {
-	hits := make([]ui.SearchHit, len(results))
-	for i, result := range results {
-		hits[i] = ui.SearchHit{
-			Tool: result.Tool, SessionID: result.SessionID, Title: result.Title,
-			CWD: result.CWD, Created: result.Created, Updated: result.Updated,
-			MessageCount: result.MessageCount, Snippets: result.Snippets, SourcePaths: result.SourcePaths,
-			LastUser: result.LastUser, LastAssistant: result.LastAssistant,
-		}
-	}
-	return hits
-}
-
-func MessagesFromRows(rows []index.ShowRow) []ui.ShowMessage {
-	out := make([]ui.ShowMessage, len(rows))
-	for i, row := range rows {
-		out[i] = ui.ShowMessage{
-			Tool: row.Tool, SessionID: row.SessionID, Title: row.Title, CWD: row.CWD,
-			Role: row.Role, Timestamp: row.Timestamp, Text: row.Text,
-		}
-	}
-	return out
-}
-
 func newComponents(theme ui.Theme, color bool, width, height int) (list.Model, viewport.Model, textinput.Model, help.Model) {
 	delegate := sessionDelegate{theme: theme}
 	sessionList := list.New(nil, delegate, width, height)

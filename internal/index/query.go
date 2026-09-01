@@ -923,6 +923,45 @@ func atomCandidateSets(db *sql.DB, tool, cwd, after string, filters queryFilters
 	return sets, nil
 }
 
+func attachMessageCounts(db *sql.DB, results []SearchResult) error {
+	const chunkSize = 500
+	for start := 0; start < len(results); start += chunkSize {
+		end := minInt(len(results), start+chunkSize)
+		placeholders := make([]string, end-start)
+		args := make([]any, end-start)
+		for i, result := range results[start:end] {
+			placeholders[i] = "?"
+			args[i] = result.Tool + "\x00" + result.SessionID
+		}
+		rows, err := db.Query(`SELECT s.tool, s.session_id, COUNT(*)
+			FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk
+			WHERE (s.tool || char(0) || s.session_id) IN (`+strings.Join(placeholders, ",")+`)
+			GROUP BY s.tool, s.session_id`, args...)
+		if err != nil {
+			return err
+		}
+		counts := make(map[string]int, end-start)
+		for rows.Next() {
+			var tool, sessionID string
+			var count int
+			if err := rows.Scan(&tool, &sessionID, &count); err != nil {
+				rows.Close()
+				return err
+			}
+			counts[tool+"\x00"+sessionID] = count
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for i := start; i < end; i++ {
+			results[i].MessageCount = counts[results[i].Tool+"\x00"+results[i].SessionID]
+		}
+	}
+	return nil
+}
+
 func loadMessageTexts(db *sql.DB, ids []int64) (map[int64]string, error) {
 	result := make(map[int64]string, len(ids))
 	const chunkSize = 500
@@ -1062,7 +1101,7 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 			groups[key] = group
 			order = append(order, key)
 		}
-		group.result.MessageCount++
+		group.result.MatchCount++
 		if len(group.ids) < 6 {
 			group.ids = append(group.ids, id)
 		}
@@ -1096,8 +1135,8 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 		if len(left.matchedTerms) != len(right.matchedTerms) {
 			return len(left.matchedTerms) > len(right.matchedTerms)
 		}
-		if left.MessageCount != right.MessageCount {
-			return left.MessageCount > right.MessageCount
+		if left.MatchCount != right.MatchCount {
+			return left.MatchCount > right.MatchCount
 		}
 		leftUpdated, rightUpdated := left.updatedEpoch, right.updatedEpoch
 		if leftUpdated == nil || rightUpdated == nil {
@@ -1114,6 +1153,9 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 	})
 	if len(results) > limit {
 		results = results[:limit]
+	}
+	if err := attachMessageCounts(db, results); err != nil {
+		return nil, err
 	}
 	termsForSnippet := make([]string, 0, len(positiveAtoms))
 	seenSnippetTerms := make(map[string]bool)

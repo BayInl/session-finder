@@ -49,7 +49,7 @@ func RenderTable(w io.Writer, data Table) {
 			WidthMax: maxWidth,
 			WidthMaxEnforcer: func(s string, max int) string {
 				clipped := Truncate(s, max)
-				if statusCol > 0 && col == statusCol {
+				if statusCol >= 0 && col == statusCol {
 					return theme.Status(strings.TrimSpace(clipped)).Render(clipped)
 				}
 				return clipped

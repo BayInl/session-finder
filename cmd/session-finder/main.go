@@ -154,7 +154,7 @@ func runSearch(argv []string) error {
 		}{Query: query, Count: len(results), Results: results}
 		return ui.WriteJSON(os.Stdout, payload)
 	}
-	ui.RenderSearch(os.Stdout, query, tui.HitsFromResults(results))
+	ui.RenderSearch(os.Stdout, query, ui.HitsFromResults(results))
 	return nil
 }
 
@@ -202,7 +202,7 @@ func runShow(argv []string) error {
 	if err != nil {
 		return err
 	}
-	ui.RenderShow(os.Stdout, tui.MessagesFromRows(rows))
+	ui.RenderShow(os.Stdout, ui.MessagesFromRows(rows))
 	return nil
 }
 

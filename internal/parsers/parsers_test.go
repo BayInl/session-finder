@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 
@@ -69,8 +71,11 @@ func TestExtractTextAndRoles(t *testing.T) {
 	if got := NormalizeRole("assistant", "<system-reminder>hidden"); got != "system" {
 		t.Fatalf("noise role = %q, want system", got)
 	}
-	if got := TitleFromText("  first  line\nsecond", 120); got != "first line" {
+	if got := TitleFromText("  first  line\nsecond"); got != "first line" {
 		t.Fatalf("TitleFromText() = %q", got)
+	}
+	if got := TitleFromText(strings.Repeat("界", titleLimit+1)); utf8.RuneCountInString(got) != titleLimit {
+		t.Fatalf("TitleFromText() rune count = %d, want %d", utf8.RuneCountInString(got), titleLimit)
 	}
 }
 
