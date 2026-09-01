@@ -45,7 +45,8 @@ release:
     name: session-finder
   prerelease: auto
 
-homebrew_casks:
+# brews is deprecated but still supported; defer homebrew_casks until tap_migrations.json, README --cask, and quarantine handling are coordinated.
+brews:
   - name: session-finder
     ids:
       - default
@@ -53,8 +54,12 @@ homebrew_casks:
       owner: BayInl
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
     homepage: https://github.com/BayInl/session-finder
     description: Search local AI sessions from multiple tools
+    license: MIT
+    test: |
+      system "#{bin}/session-finder", "--help"
 
 changelog:
   sort: asc
