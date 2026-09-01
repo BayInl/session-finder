@@ -45,7 +45,7 @@ release:
     name: session-finder
   prerelease: auto
 
-brews:
+homebrew_casks:
   - name: session-finder
     ids:
       - default
@@ -53,12 +53,8 @@ brews:
       owner: BayInl
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
     homepage: https://github.com/BayInl/session-finder
     description: Search local AI sessions from multiple tools
-    license: MIT
-    test: |
-      system "#{bin}/session-finder", "--help"
 
 changelog:
   sort: asc
