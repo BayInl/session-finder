@@ -249,6 +249,38 @@ func TestSearchInputAndSubmit(t *testing.T) {
 	}
 }
 
+func TestMatchPreviewFlattensAndHighlights(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("CLICOLOR_FORCE", "")
+	hits := []index.SearchResult{{
+		Tool: "codex", SessionID: "session-alpha", Title: "Alpha deploy",
+		Snippets: []string{
+			`con.execute(\"insert into messages values (1, 'hello unique_token')\")\n con.commit()`,
+			`docker compose up\npanic recovered`,
+		},
+		LastUser: "search hello", LastAssistant: "found it",
+	}}
+	m := New(Config{Query: "hello OR docker AND NOT test", Limit: 20}, fakeStore{hits: hits}, io.Discard)
+	m = apply(t, m, searchMsg{results: hits})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	view := ui.StripANSI(m.View().Content)
+	if strings.Contains(view, `\n`) {
+		t.Fatalf("match preview still shows escaped newlines: %q", view)
+	}
+	if !strings.Contains(view, "hello unique_token") {
+		t.Fatalf("flattened match missing: %q", view)
+	}
+	if !strings.Contains(view, "docker compose up") {
+		t.Fatalf("boolean OR window missing: %q", view)
+	}
+	if !strings.Contains(view, "match") {
+		t.Fatalf("match section missing: %q", view)
+	}
+	if !strings.Contains(view, "hello") || !strings.Contains(view, "docker") {
+		t.Fatalf("positive term chips missing: %q", view)
+	}
+}
+
 func TestMoveAndLoadDetail(t *testing.T) {
 	m := New(Config{Limit: 20}, fakeStore{hits: testHits(), rows: testRows()}, io.Discard)
 	m = apply(t, m, searchMsg{results: testHits()})

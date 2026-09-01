@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/BayInl/session-finder/internal/record"
 )
 
@@ -316,11 +318,44 @@ func TestRenderTableZeroStatusColDoesNotColorID(t *testing.T) {
 	}
 }
 
+func TestHighlightKeepsTermContiguous(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+	t.Setenv("NO_COLOR", "")
+	style := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("0")).
+		Background(lipgloss.Color("6"))
+	got := HighlightTerms("say hello AND NOT test there", []string{"hello"}, style)
+	if StripANSI(got) != "say hello AND NOT test there" {
+		t.Fatalf("stripped = %q", StripANSI(got))
+	}
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("background highlight split the term: %q", got)
+	}
+	if !strings.Contains(got, "\x1b") {
+		t.Fatalf("expected ANSI highlight: %q", got)
+	}
+	andAt := strings.Index(got, "AND")
+	if andAt < 0 {
+		t.Fatalf("AND missing: %q", got)
+	}
+	if strings.Contains(got[andAt:], "\x1b") {
+		t.Fatalf("boolean/negated tokens were highlighted: %q", got)
+	}
+}
+
+func TestPreviewFlattensEscapes(t *testing.T) {
+	got := Preview(`foo\nbar\t\"baz\"`)
+	if got != `foo bar "baz"` {
+		t.Fatalf("Preview = %q", got)
+	}
+}
+
 func TestHighlightAfterTruncate(t *testing.T) {
 	t.Setenv("CLICOLOR_FORCE", "1")
 	t.Setenv("NO_COLOR", "")
 	theme := NewTheme(io.Discard)
-	got := Highlight("hello alpha world", "alpha", theme.Style(TokenPrimary))
+	got := HighlightTerms("hello alpha world", []string{"alpha"}, theme.Style(TokenPrimary))
 	if !strings.Contains(got, "alpha") {
 		t.Fatalf("highlight missing term: %q", got)
 	}
@@ -328,7 +363,7 @@ func TestHighlightAfterTruncate(t *testing.T) {
 		t.Fatalf("FORCE should color highlight: %q", got)
 	}
 	plain := Truncate("hello alpha world", 20)
-	styled := Highlight(plain, "alpha", theme.Style(TokenPrimary))
+	styled := HighlightTerms(plain, []string{"alpha"}, theme.Style(TokenPrimary))
 	if DisplayWidth(styled) != DisplayWidth(plain) {
 		t.Fatalf("highlight changed width: %d vs %d", DisplayWidth(styled), DisplayWidth(plain))
 	}

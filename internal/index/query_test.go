@@ -29,6 +29,33 @@ func TestParseQueryFieldsBooleanAndEscapes(t *testing.T) {
 	}
 }
 
+func TestPositiveTermsSkipsBooleanAndFields(t *testing.T) {
+	got := PositiveTerms(`hello AND NOT test tool:codex "exact phrase"`)
+	want := []string{"exact phrase", "hello"}
+	if len(got) != len(want) {
+		t.Fatalf("PositiveTerms = %#v want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("PositiveTerms = %#v want %#v", got, want)
+		}
+	}
+	orTerms := PositiveTerms("docker OR panic")
+	if len(orTerms) != 2 || orTerms[0] != "docker" || orTerms[1] != "panic" {
+		t.Fatalf("OR terms = %#v", orTerms)
+	}
+	grouped := PositiveTerms("hello AND NOT (foo OR bar)")
+	if len(grouped) != 1 || grouped[0] != "hello" {
+		t.Fatalf("grouped NOT = %#v", grouped)
+	}
+	if terms := PositiveTerms("alpha AND"); terms != nil {
+		t.Fatalf("invalid query = %#v", terms)
+	}
+	if terms := PositiveTerms("tool:codex"); terms != nil {
+		t.Fatalf("filter-only = %#v", terms)
+	}
+}
+
 func TestParseQueryRejectsInvalidBooleanExpressions(t *testing.T) {
 	for _, query := range []string{
 		`NOT alpha`,

@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -13,8 +12,7 @@ import (
 )
 
 var (
-	highlightTermRE = regexp.MustCompile(`[A-Za-z0-9_]+|[\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}]+`)
-	uuidRE          = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+	uuidRE = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 )
 
 func StripANSI(s string) string {
@@ -288,31 +286,23 @@ func writeUnicodeEscape(result *strings.Builder, char rune) {
 	}
 }
 
-func Highlight(s, query string, match lipgloss.Style) string {
-	raw := highlightTermRE.FindAllString(query, -1)
-	if len(raw) == 0 || s == "" {
+// Preview flattens stored/escaped whitespace so match windows stay readable.
+func Preview(s string) string {
+	s = strings.NewReplacer(`\r\n`, " ", `\n`, " ", `\r`, " ", `\t`, " ", `\"`, `"`).Replace(s)
+	return PlainField(s)
+}
+
+func HighlightTerms(s string, terms []string, match lipgloss.Style) string {
+	if len(terms) == 0 || s == "" {
 		return s
 	}
-	seen := map[string]bool{}
-	terms := make([]string, 0, len(raw))
-	for _, term := range raw {
-		key := strings.ToLower(term)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		terms = append(terms, term)
-	}
-	sort.Slice(terms, func(i, j int) bool {
-		return len([]rune(terms[i])) > len([]rune(terms[j]))
-	})
 	runes := []rune(s)
 	var result strings.Builder
 	for i := 0; i < len(runes); {
 		found := 0
 		for _, term := range terms {
 			n := len([]rune(term))
-			if i+n > len(runes) {
+			if n == 0 || i+n > len(runes) {
 				continue
 			}
 			if strings.EqualFold(string(runes[i:i+n]), term) {

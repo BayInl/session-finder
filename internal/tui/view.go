@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/BayInl/session-finder/internal/brand"
+	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
 	"github.com/BayInl/session-finder/internal/ui"
 )
@@ -226,19 +227,18 @@ func (m Model) detailContent() string {
 	if wrapW < 16 {
 		wrapW = 16
 	}
+	terms := index.PositiveTerms(m.query)
+	match := matchStyle(m.theme, m.color)
 	if userText != "" {
-		b.WriteString(wrapRoleText(m.theme.Role("user").Render("user")+": ", "user: ", userText, wrapW, 8))
+		b.WriteString(wrapRoleText(m.theme.Role("user").Render("user")+": ", "user: ", userText, terms, match, wrapW, 8))
 	}
 	if assistantText != "" {
-		b.WriteString(wrapRoleText(m.theme.Role("assistant").Render("assistant")+": ", "assistant: ", assistantText, wrapW, 8))
+		b.WriteString(wrapRoleText(m.theme.Role("assistant").Render("assistant")+": ", "assistant: ", assistantText, terms, match, wrapW, 8))
 	}
 	b.WriteByte('\n')
 	if m.loadedID != hit.SessionID || len(m.detail) == 0 {
 		b.WriteString(muted.Render("enter/l load transcript"))
-		if len(hit.Snippets) > 0 {
-			b.WriteString("\n\n")
-			b.WriteString(muted.Render("match: ") + ui.Highlight(hit.Snippets[0], m.query, m.theme.Style(ui.TokenPrimary)))
-		}
+		writeMatchSnippets(&b, hit.Snippets, terms, match, muted, wrapW)
 		return b.String()
 	}
 	b.WriteString(muted.Render("transcript"))
@@ -248,16 +248,56 @@ func (m Model) detailContent() string {
 			b.WriteByte('\n')
 		}
 		fmt.Fprintf(&b, "%s %s\n", muted.Render("["+row.Timestamp+"]"), m.theme.Role(row.Role).Render(row.Role))
-		text := strings.Join(strings.Fields(row.Text), " ")
+		text := ui.Preview(row.Text)
 		for _, line := range ui.WrapLines(text, wrapW, 0) {
-			if m.query != "" {
-				line = ui.Highlight(line, m.query, m.theme.Style(ui.TokenPrimary))
-			}
-			b.WriteString(line)
+			b.WriteString(ui.HighlightTerms(line, terms, match))
 			b.WriteByte('\n')
 		}
 	}
 	return b.String()
+}
+
+func matchStyle(theme ui.Theme, color bool) lipgloss.Style {
+	if !color {
+		return lipgloss.NewStyle().Bold(true).Underline(true)
+	}
+	return lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("0")).
+		Background(lipgloss.Color(theme.Palette.Primary))
+}
+
+func writeMatchSnippets(b *strings.Builder, snippets []string, terms []string, match, muted lipgloss.Style, width int) {
+	if len(snippets) == 0 {
+		return
+	}
+	b.WriteString("\n\n")
+	header := muted.Render("match")
+	if len(terms) > 0 {
+		chips := make([]string, 0, len(terms))
+		for _, term := range terms {
+			chips = append(chips, match.Render(ui.Truncate(term, 24)))
+		}
+		header += "  " + strings.Join(chips, muted.Render(" · "))
+	}
+	b.WriteString(clipLine(header, width))
+	b.WriteByte('\n')
+	shown := 0
+	for _, snippet := range snippets {
+		preview := ui.Preview(snippet)
+		if preview == "-" {
+			continue
+		}
+		if shown > 0 {
+			b.WriteString(muted.Render("···"))
+			b.WriteByte('\n')
+		}
+		for _, line := range ui.WrapLines(preview, width, 3) {
+			b.WriteString(ui.HighlightTerms(line, terms, match))
+			b.WriteByte('\n')
+		}
+		shown++
+	}
 }
 
 func (m Model) renderHelp() string {
@@ -278,24 +318,24 @@ func (m Model) renderHelp() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box.Render(body))
 }
 
-func wrapRoleText(styledPrefix, plainPrefix, text string, width, maxLines int) string {
+func wrapRoleText(styledPrefix, plainPrefix, text string, terms []string, match lipgloss.Style, width, maxLines int) string {
 	pad := ui.DisplayWidth(plainPrefix)
 	budget := width - pad
 	if budget < 8 {
 		budget = 8
 	}
-	lines := ui.WrapLines(text, budget, maxLines)
+	lines := ui.WrapLines(ui.Preview(text), budget, maxLines)
 	if len(lines) == 0 {
 		return ""
 	}
 	indent := strings.Repeat(" ", pad)
 	var b strings.Builder
 	b.WriteString(styledPrefix)
-	b.WriteString(lines[0])
+	b.WriteString(ui.HighlightTerms(lines[0], terms, match))
 	b.WriteByte('\n')
 	for _, line := range lines[1:] {
 		b.WriteString(indent)
-		b.WriteString(line)
+		b.WriteString(ui.HighlightTerms(line, terms, match))
 		b.WriteByte('\n')
 	}
 	return b.String()

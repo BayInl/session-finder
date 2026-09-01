@@ -448,6 +448,30 @@ func collectQueryAtoms(expr *queryExpr, negated bool, atoms *[]queryAtom) {
 	}
 }
 
+// PositiveTerms returns unique positive query atoms for highlighting.
+// Invalid or filter-only queries return nil.
+func PositiveTerms(query string) []string {
+	expr, _, err := parseQuery(query)
+	if err != nil || expr == nil {
+		return nil
+	}
+	var atoms []queryAtom
+	collectQueryAtoms(expr, false, &atoms)
+	seen := make(map[string]bool, len(atoms))
+	terms := make([]string, 0, len(atoms))
+	for _, atom := range atoms {
+		if seen[atom.key] {
+			continue
+		}
+		seen[atom.key] = true
+		terms = append(terms, atom.value)
+	}
+	sort.SliceStable(terms, func(i, j int) bool {
+		return len([]rune(terms[i])) > len([]rune(terms[j]))
+	})
+	return terms
+}
+
 func cloneIDSet(values map[int64]struct{}) map[int64]struct{} {
 	result := make(map[int64]struct{}, len(values))
 	for id := range values {
