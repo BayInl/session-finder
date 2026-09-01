@@ -2,6 +2,7 @@ package tui
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 
 	"github.com/BayInl/session-finder/internal/index"
@@ -99,8 +100,4 @@ func escapeLike(value string) string {
 	return value
 }
 
-type afterError string
-
-func (e afterError) Error() string { return string(e) }
-
-const errAfterFormat afterError = "after must be YYYY-MM-DD"
+var errAfterFormat = errors.New("after must be YYYY-MM-DD")

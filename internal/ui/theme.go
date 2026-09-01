@@ -26,8 +26,7 @@ type Palette struct {
 	Roles                                      map[string]string
 }
 
-// DefaultPalette returns 16/256-color-safe defaults.
-func DefaultPalette() Palette {
+func defaultPalette() Palette {
 	return Palette{
 		Primary: "6",
 		Muted:   "8",
@@ -52,15 +51,19 @@ func DefaultPalette() Palette {
 
 type Theme struct {
 	Palette Palette
-	r       *Renderer
+	enabled bool
 }
 
 func NewTheme(w io.Writer) Theme {
-	return Theme{Palette: DefaultPalette(), r: NewRenderer(w)}
+	return Theme{Palette: defaultPalette(), enabled: ColorEnabled(w)}
+}
+
+func (t Theme) ColorEnabled() bool {
+	return t.enabled
 }
 
 func (t Theme) color() bool {
-	return t.r != nil && t.r.color
+	return t.enabled
 }
 
 func (t Theme) colorValue(value string) lipgloss.Style {

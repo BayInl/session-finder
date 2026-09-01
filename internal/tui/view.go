@@ -217,7 +217,11 @@ func (m Model) detailContent() string {
 	fmt.Fprintf(&b, "title: %s\n", dash(hit.Title))
 	fmt.Fprintf(&b, "cwd: %s\n", dash(hit.CWD))
 	fmt.Fprintf(&b, "time: %s .. %s  %s\n", dash(hit.Created), dash(hit.Updated), ui.RelativeTime(hit.Updated))
-	fmt.Fprintf(&b, "messages: %d\n\n", hit.MessageCount)
+	countLabel := "messages"
+	if strings.TrimSpace(m.query) != "" {
+		countLabel = "matches"
+	}
+	fmt.Fprintf(&b, "%s: %d\n\n", countLabel, hit.MessageCount)
 
 	userText, assistantText := hit.LastUser, hit.LastAssistant
 	if userText == "" && assistantText == "" {
@@ -248,8 +252,7 @@ func (m Model) detailContent() string {
 			b.WriteByte('\n')
 		}
 		fmt.Fprintf(&b, "%s %s\n", muted.Render("["+row.Timestamp+"]"), m.theme.Role(row.Role).Render(row.Role))
-		text := ui.Preview(row.Text)
-		for _, line := range ui.WrapLines(text, wrapW, 0) {
+		for _, line := range ui.WrapTextLines(row.Text, wrapW) {
 			b.WriteString(ui.HighlightTerms(line, terms, match))
 			b.WriteByte('\n')
 		}
@@ -285,7 +288,7 @@ func writeMatchSnippets(b *strings.Builder, snippets []string, terms []string, m
 	shown := 0
 	for _, snippet := range snippets {
 		preview := ui.Preview(snippet)
-		if preview == "-" {
+		if preview == "" {
 			continue
 		}
 		if shown > 0 {

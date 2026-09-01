@@ -14,22 +14,24 @@ import (
 
 // IndexProgress draws a TTY spinner/bar on w. Non-TTY only prints source warnings.
 type IndexProgress struct {
-	w       io.Writer
-	tty     bool
-	mu      sync.Mutex
-	calls   int
-	pw      progress.Writer
-	spinner *progress.Tracker
-	bar     *progress.Tracker
-	done    chan struct{}
-	closed  bool
+	w          io.Writer
+	tty        bool
+	theme      Theme
+	color      bool
+	mu         sync.Mutex
+	pw         progress.Writer
+	spinner    *progress.Tracker
+	bar        *progress.Tracker
+	renderDone chan struct{}
+	closed     bool
 }
 
 func NewIndexProgress(w io.Writer) *IndexProgress {
 	if w == nil {
 		w = io.Discard
 	}
-	return &IndexProgress{w: w, tty: IsTTY(w)}
+	theme := NewTheme(w)
+	return &IndexProgress{w: w, tty: IsTTY(w), theme: theme, color: theme.ColorEnabled()}
 }
 
 func (p *IndexProgress) Report(done, total int, spec record.SourceSpec, err error) {
@@ -44,27 +46,40 @@ func (p *IndexProgress) Report(done, total int, spec record.SourceSpec, err erro
 		}
 		return
 	}
-	p.calls++
 	if !p.tty {
 		if err != nil {
 			fmt.Fprintf(p.w, "warning: failed to index %s: %v\n", spec.Path, err)
 		}
 		return
 	}
-	switch p.calls {
-	case 1:
-		p.startWriter()
-		p.spinner = &progress.Tracker{Message: "discovering sources", Total: 0, RemoveOnCompletion: true}
-		p.pw.AppendTracker(p.spinner)
-	case 2:
+	switch {
+	case done == 0 && total == 0:
+		if p.pw == nil {
+			p.startWriter()
+		}
+		if p.spinner == nil {
+			p.spinner = &progress.Tracker{Message: "discovering sources", Total: 0, RemoveOnCompletion: true}
+			p.pw.AppendTracker(p.spinner)
+		}
+	case done == 0:
+		if p.pw == nil {
+			p.startWriter()
+		}
 		if p.spinner != nil && !p.spinner.IsDone() {
 			p.spinner.MarkAsDone()
 		}
-		if total > 0 {
+		if total > 0 && p.bar == nil {
 			p.bar = &progress.Tracker{Message: "indexing", Total: int64(total)}
 			p.pw.AppendTracker(p.bar)
 		}
 	default:
+		if p.pw == nil {
+			p.startWriter()
+		}
+		if p.bar == nil && total > 0 {
+			p.bar = &progress.Tracker{Message: "indexing", Total: int64(total)}
+			p.pw.AppendTracker(p.bar)
+		}
 		if p.bar != nil {
 			msg := spec.Tool
 			if spec.Path != "" {
@@ -77,12 +92,11 @@ func (p *IndexProgress) Report(done, total int, spec record.SourceSpec, err erro
 			if msg != "" {
 				p.bar.UpdateMessage(msg)
 			}
-			p.bar.Increment(1)
+			p.bar.SetValue(int64(done))
 		}
 		if err != nil {
 			p.logWarningLocked(spec, err)
 		}
-		_ = done
 	}
 }
 
@@ -105,10 +119,10 @@ func (p *IndexProgress) Close() {
 	if p.pw != nil {
 		p.pw.Stop()
 	}
-	done := p.done
+	renderDone := p.renderDone
 	p.mu.Unlock()
-	if done != nil {
-		<-done
+	if renderDone != nil {
+		<-renderDone
 	}
 }
 
@@ -123,7 +137,7 @@ func (p *IndexProgress) startWriter() {
 	pw.SetUpdateFrequency(100 * time.Millisecond)
 	style := progress.StyleDefault
 	style.Colors = progress.StyleColors{}
-	if ColorEnabled(p.w) {
+	if p.color {
 		style.Colors = progress.StyleColors{
 			Message: text.Colors{text.FgBlue},
 			Error:   text.Colors{text.FgRed},
@@ -137,10 +151,10 @@ func (p *IndexProgress) startWriter() {
 	}
 	pw.SetStyle(style)
 	p.pw = pw
-	p.done = make(chan struct{})
+	p.renderDone = make(chan struct{})
 	go func() {
 		pw.Render()
-		close(p.done)
+		close(p.renderDone)
 	}()
 	deadline := time.Now().Add(time.Second)
 	for !pw.IsRenderInProgress() && time.Now().Before(deadline) {
@@ -150,8 +164,8 @@ func (p *IndexProgress) startWriter() {
 
 func (p *IndexProgress) logWarningLocked(spec record.SourceSpec, err error) {
 	prefix := "warning:"
-	if ColorEnabled(p.w) {
-		prefix = NewTheme(p.w).Style(TokenWarn).Render("warning:")
+	if p.color {
+		prefix = p.theme.Style(TokenWarn).Render("warning:")
 	}
 	msg := fmt.Sprintf("%s failed to index %s: %v", prefix, spec.Path, err)
 	if p.pw != nil && p.pw.IsRenderInProgress() {

@@ -53,33 +53,6 @@ func Width(w io.Writer) int {
 	return 80
 }
 
-// Renderer is the v2 stand-in for lipgloss.Renderer (removed in lipgloss v2).
-// It is bound to w and records ColorEnabled so Theme styles do not auto-detect.
-type Renderer struct {
-	w     io.Writer
-	color bool
-}
-
-// NewRenderer returns a writer-bound renderer whose color profile follows ColorEnabled.
-// Lipgloss v2 removed *lipgloss.Renderer; this is the C-seam replacement.
-func NewRenderer(w io.Writer) *Renderer {
-	if w == nil {
-		w = io.Discard
-	}
-	return &Renderer{w: w, color: ColorEnabled(w)}
-}
-
-func (r *Renderer) Writer() io.Writer {
-	if r == nil || r.w == nil {
-		return io.Discard
-	}
-	return r.w
-}
-
-func (r *Renderer) Color() bool {
-	return r != nil && r.color
-}
-
 // WriteJSON encodes v with SetEscapeHTML(false), indent "  ", and a trailing newline.
 func WriteJSON(w io.Writer, v any) error {
 	encoder := json.NewEncoder(w)
