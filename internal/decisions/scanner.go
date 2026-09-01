@@ -24,9 +24,10 @@ var (
 	testFailRE                = regexp.MustCompile(`(?i)(?:\b(?:go test|cargo test|pytest|npm test|yarn test|pnpm test|vitest|jest|gradle test|mvn test)\b[^\n]*(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass)\b)|(?:\btests?\b[^\n]*(?:fail|failed|failure|error|panic|did not pass|does not pass|doesn['’]?t pass)\b)|(?:测试失败|测试报错|build failed)|(?:^|\n)\s*FAIL\b`)
 	becauseRE                 = regexp.MustCompile(`(?is)\b(?:because|since|so that|due to)\s+(.+?)(?:[.!?]|$)|(?:因为|由于|为了)\s*(.+?)(?:[。！？!?]|$)`)
 	additionalReasonRE        = regexp.MustCompile(`(?is)(?:便于|方便|避免|确保|以便|适合|符合|有利于|保证|防止|减少|降低|支持)\s*(.+?)(?:[.!?]|$|[。！？!?])`)
-	consequenceBeforeChoiceRE = regexp.MustCompile(`(?is)^(.+?)[，,；;]\s*(?:因此|所以)\s*((?:我\s*)?(?:改用|换成|改为|转为|切换到|采用|使用|选择|推荐|建议)\b.+?)`)
-	consequenceAfterRE        = regexp.MustCompile(`(?is)[，,；;]\s*(?:这样|因此|所以)\s*(.+?)(?:[.!?]|$|[。！？!?])`)
-	choiceReasonRE            = regexp.MustCompile(`(?i)\b(?:because|since|due to|so that)\b|因为|由于|为了|便于|方便|避免|确保|以便|适合|符合|有利于|保证|防止|减少|降低|支持|这样|因此|所以`)
+	consequenceBeforeChoiceRE = regexp.MustCompile(`(?is)^(.+?)[，,；;]\s*(?:therefore|so|thus|因此|所以)\s*((?:(?:i|we|我|我们|主路径)\s*)?(?:(?:switch(?:ed)?\s+to|use|choose|chose|select(?:ed)?|recommend(?:ed)?|adopt(?:ed)?|go\s+with)\b|(?:改用|换成|改为|转为|切换到|采用|使用|选择|推荐|建议)(?:了)?).+?)(?:[.!?。！？]|$)`)
+	consequenceAfterRE        = regexp.MustCompile(`(?is)[，,；;]\s*(?:so|therefore|thus|这样|因此|所以)\s*(.+?)(?:[.!?]|$|[。！？!?])`)
+	consequenceChoiceRE       = regexp.MustCompile(`(?is)(?:(?:switch(?:ed)?\s+to|use|choose|chose|select(?:ed)?|recommend(?:ed)?|adopt(?:ed)?|go\s+with)\b\s+|(?:改用|换成|改为|转为|切换到|采用|使用|选择|推荐|建议)(?:了)?\s*)(.+)$`)
+	choiceReasonRE            = regexp.MustCompile(`(?i)\b(?:because|since|due to|so that|so|therefore|thus)\b|因为|由于|为了|便于|方便|避免|确保|以便|适合|符合|有利于|保证|防止|减少|降低|支持|这样|因此|所以`)
 	choiceSeparatorRE         = regexp.MustCompile(`(?i)\s+(?:or|或者)\s+|或者|、|\s+/\s+`)
 	insteadRE                 = regexp.MustCompile(`(?is)\binstead of\s+(.+?)(?:,|;|\s+(?:use|choose|pick|adopt|go with)\s+)(.+?)(?:[.!?]|$)|(?:不使用|不要)\s*(.+?)(?:(?:，|,|；|;)\s*(?:改用|换成|改为|使用)|\s+(?:改用|换成|改为))\s*(.+?)(?:[。！？!?]|$)`)
 	chooseOverRE              = regexp.MustCompile(`(?is)\b(?:choose|pick|select|prefer|use|adopt|go with)\b\s+(.+?)\s+(?:over|rather than|instead of)\s+(.+?)(?:\s+because\b|[.!?]|$)`)
@@ -40,7 +41,7 @@ var (
 	toolMetaChoiceRE          = regexp.MustCompile(`(?i)\bskills?\b|技能`)
 	negativeUseRE             = regexp.MustCompile(`(?is)^\s*(?:do not|don't|never|not|without)\s+use\b|\b(?:do not|don't|never|not)\s+use\b|^\s*(?:不要|不使用|未使用|没有使用|尚未使用)`)
 	questionEndingRE          = regexp.MustCompile(`[?？]\s*$`)
-	progressNoiseRE           = regexp.MustCompile(`(?i)\b(?:i['’]?m|i am)\s+(?:pulling|reading|checking|inspecting|reviewing|verifying|confirming|comparing|collecting|gathering|looking(?:\s+at)?)\b|\bi\s+want\s+to\s+be\s+precise\b`)
+	progressNoiseRE           = regexp.MustCompile(`(?i)\b(?:i['’]?m|i am)\s+(?:pulling|reading|checking|inspecting|reviewing|verifying|confirming|comparing|collecting|gathering|looking(?:\s+at)?)\b|\bi\s+want\s+to\s+be\s+precise\b|(?:我|我们)(?:正在|在)(?:拉取|读取|检查|核对|审查|验证|确认|比较|收集|查看)`)
 	questionRE                = regexp.MustCompile(`(?i)\b(?:should we|which|what should|how should we)\b|是否|哪个方案|怎么选|如何选择`)
 	planRE                    = regexp.MustCompile(`(?i)\b(?:next step|next|then|after that|later|i['’]?ll|i will|we['’]?ll|we will|going to|plan to|intend to|let me|todo|to do|first .* then)\b|下一步|接下来|然后|之后|稍后|我会|我们会|计划|打算|先.*再|待办`)
 	metaReasoningRE           = regexp.MustCompile(`(?i)\b(?:i need to decide|i should decide|i['’]?m deciding|let me decide|thinking through|reasoning about|need to choose|we need to decide)\b|我(?:需要|应该)决定|我在(?:判断|考虑)|需要选择`)
@@ -116,6 +117,9 @@ func Extract(messages []record.MessageRecord, options ExtractOptions) []Decision
 				continue
 			}
 			if !isUsableDecisionSegment(message.Role, text, signalText) {
+				continue
+			}
+			if progressNoiseRE.MatchString(signalText) {
 				continue
 			}
 			if !hasDecisionCue(signalText) || questionRE.MatchString(signalText) && !hasDecisionStatement(signalText) {
@@ -324,7 +328,7 @@ func hasDecisionCue(text string) bool {
 	if strongDecisionCueRE.MatchString(text) {
 		return true
 	}
-	return usageCueRE.MatchString(text) && semanticUsageRE.MatchString(text)
+	return usageCueRE.MatchString(text) && (semanticUsageRE.MatchString(text) || leadingUseRE.MatchString(text) && consequenceAfterRE.MatchString(text))
 }
 
 func candidateFromSegment(messages []scanMessage, index int, segment decisionSegment, extractor string) DecisionCandidate {
@@ -592,6 +596,14 @@ func mergeCandidate(target, source *DecisionCandidate) {
 
 func extractOptions(text string) ([]string, string) {
 	trimmed := strings.TrimSpace(text)
+	if match := consequenceBeforeChoiceRE.FindStringSubmatch(trimmed); len(match) >= 3 {
+		choiceClause := strings.TrimSpace(match[2])
+		if choice := consequenceChoiceRE.FindStringSubmatch(choiceClause); len(choice) > 1 {
+			chosen := cleanChoice(choiceBeforeReason(choice[1]))
+			return uniqueChoices([]string{chosen}), chosen
+		}
+		return extractOptions(choiceClause)
+	}
 	if match := chooseOverRE.FindStringSubmatch(trimmed); len(match) >= 3 {
 		chosen := cleanChoice(match[1])
 		alternative := cleanChoice(match[2])
@@ -668,6 +680,15 @@ func extractRationale(text string) string {
 	}
 	if match := additionalReasonRE.FindStringSubmatch(trimmed); len(match) > 1 {
 		return cleanChoice(match[1])
+	}
+	if match := consequenceBeforeChoiceRE.FindStringSubmatch(trimmed); len(match) >= 3 {
+		return cleanChoice(match[1])
+	}
+	if match := consequenceAfterRE.FindStringSubmatchIndex(trimmed); len(match) >= 4 {
+		choiceText := strings.TrimSpace(trimmed[:match[0]])
+		if segmentExplicitChoiceRE.MatchString(choiceText) || leadingUseRE.MatchString(choiceText) {
+			return cleanChoice(trimmed[match[2]:match[3]])
+		}
 	}
 	return ""
 }

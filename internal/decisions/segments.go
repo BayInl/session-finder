@@ -17,7 +17,7 @@ var (
 	segmentPromptRE         = regexp.MustCompile(`(?i)\b(?:only give|return only|output only|do not modify|don't modify|just answer|please inspect|key files?|focus on|must list|expected outcome|task|automation|context from my ide setup|system instructions?|developer instructions?)\b|只给|只返回|只接受|不要修改|请重点检查|关键文件|已验证|输出格式|任务|自动化|上下文`)
 	segmentChoiceLabelRE    = regexp.MustCompile(`(?i)\b(?:approved|changes_requested|pass|fail|yes|no)\s*(?:or|/|、|或)\s*\b(?:approved|changes_requested|pass|fail|yes|no)\b`)
 	segmentPlanRE           = regexp.MustCompile(`(?i)\b(?:next step|next|then|after that|later|i['’]?ll|i will|we['’]?ll|we will|going to|plan to|intend to|let me|todo|to do|first .* then)\b|下一步|接下来|然后|之后|稍后|我会|我们会|计划|打算|先.*再|待办`)
-	segmentFuturePlanRE     = regexp.MustCompile(`(?i)^\s*(?:going to|plan to|intend to)\b|^\s*(?:将|即将|准备|接下来|下一步|后续|稍后|我会|我们会|我将|我们将|计划|打算)|^\s*(?:现在|接下来)\s*(?:改|修改|调整|补|新增|实现|写|处理|做|停掉|准备)`)
+	segmentFuturePlanRE     = regexp.MustCompile(`(?i)^\s*(?:(?:i|we)(?:['’]?ll|\s+will)|going to|plan to|intend to)\b|^\s*(?:将|即将|准备|接下来|下一步|后续|稍后|我会|我们会|我将|我们将|计划|打算)|^\s*(?:现在|接下来)\s*(?:改|修改|调整|补|新增|实现|写|处理|做|停掉|准备)|^\s*先.+再|\bnext step\b|下一步`)
 	segmentMetaRE           = regexp.MustCompile(`(?i)\b(?:i need to decide|i should decide|i['’]?m deciding|let me decide|thinking through|reasoning about|need to choose|we need to decide)\b|我(?:需要|应该)决定|我在(?:判断|考虑)|需要选择`)
 	segmentDeliberationRE   = regexp.MustCompile(`(?i)\b(?:i['’]?m considering|i am considering|i might|i wonder|let me try|let me go with|could use|might be best)\b`)
 	segmentRefusalRE        = regexp.MustCompile(`(?i)\b(?:i can['’]?t|cannot|can not|won['’]?t|not able|unable|not permitted|must refuse|refuse to|i['’]?m not allowed)\b|不能|无法|不可以|不允许|拒绝|没法`)
@@ -34,6 +34,9 @@ var (
 )
 
 func splitDecisionSegments(text string) []decisionSegment {
+	if trimmed := strings.TrimSpace(text); segmentHeadingRE.MatchString(trimmed) {
+		return []decisionSegment{{Text: trimmed, Ordinal: 0}}
+	}
 	result := make([]decisionSegment, 0, 4)
 	start, ordinal := 0, 0
 	fenced, inline := false, false
@@ -60,7 +63,7 @@ func splitDecisionSegments(text string) []decisionSegment {
 			} else if markdownLinkDepth > 0 && r == ')' {
 				markdownLinkDepth--
 			}
-			if markdownLinkDepth == 0 && isSegmentBoundary(r) {
+			if markdownLinkDepth == 0 && isSegmentBoundary(r) && !startsConsequenceClause(text[offset+size:]) {
 				end := offset + size
 				if segment := strings.TrimSpace(text[start:end]); segment != "" {
 					result = append(result, decisionSegment{Text: segment, Ordinal: ordinal})
@@ -86,12 +89,33 @@ func isSegmentBoundary(r rune) bool {
 	}
 }
 
+func startsConsequenceClause(text string) bool {
+	text = strings.TrimSpace(text)
+	lower := strings.ToLower(text)
+	for _, prefix := range []string{"so ", "therefore ", "thus ", "这样", "因此", "所以"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func isUsableDecisionSegment(role, text, signalText string) bool {
 	if len([]rune(strings.TrimSpace(text))) < 8 || strings.TrimSpace(signalText) == "" {
 		return false
 	}
 	trimmed := strings.TrimSpace(text)
 	if segmentNoiseRE.MatchString(trimmed) {
+		return false
+	}
+	// Structural fragments and future-action narration are not durable
+	// decisions. Bullets remain eligible only when they contain an explicit
+	// choice, so prose such as "Use SQLite because ..." is not lost merely
+	// because it was formatted as a list item.
+	if segmentFuturePlanRE.MatchString(signalText) || segmentTableRE.MatchString(trimmed) || segmentHeadingRE.MatchString(trimmed) {
+		return false
+	}
+	if segmentBulletRE.MatchString(trimmed) && !segmentExplicitChoiceRE.MatchString(signalText) {
 		return false
 	}
 	// Deliberation markers are noise even when the same sentence also names a
