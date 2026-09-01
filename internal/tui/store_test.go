@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/BayInl/session-finder/internal/index"
+	"github.com/BayInl/session-finder/internal/ui"
 )
 
 func testIndexDB(t *testing.T) *sql.DB {
@@ -115,7 +116,7 @@ func TestEmptyQuerySearchUsesListRecent(t *testing.T) {
 	if results[0].LastUser == "" || results[0].LastAssistant == "" {
 		t.Fatalf("empty-query browse omitted last round: %#v", results[0])
 	}
-	hits := HitsFromResults(results)
+	hits := ui.HitsFromResults(results)
 	if hits[0].LastUser != results[0].LastUser || hits[0].LastAssistant != results[0].LastAssistant {
 		t.Fatalf("hits dropped last round: %#v", hits[0])
 	}

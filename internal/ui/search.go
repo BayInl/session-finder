@@ -26,6 +26,6 @@ func RenderSearch(w io.Writer, query string, hits []SearchHit) {
 			Truncate(dash(hit.Title), 72),
 			Truncate(firstSnippet(hit), 160),
 			Truncate(PathSummary(hit.SourcePaths), 80),
-			hit.MessageCount, dash(PlainField(hit.Updated)))
+			hit.MatchCount, dash(PlainField(hit.Updated)))
 	}
 }

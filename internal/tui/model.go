@@ -167,7 +167,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = ""
-		m.hits = HitsFromResults(msg.results)
+		m.hits = ui.HitsFromResults(msg.results)
 		m.setListItems(m.hits)
 		m.loadedID = ""
 		m.detail = nil
@@ -184,7 +184,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = ""
 		m.loadedID = msg.sessionID
-		m.detail = MessagesFromRows(msg.rows)
+		m.detail = ui.MessagesFromRows(msg.rows)
 		m.refreshDetail()
 		return m, nil
 

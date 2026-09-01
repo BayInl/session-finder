@@ -131,7 +131,7 @@ func TestRenderSearchPipeHasNoANSI(t *testing.T) {
 	hits := []SearchHit{{
 		Tool: "codex", SessionID: "session-1", Title: "Question",
 		Snippets: []string{"alpha snippet"}, SourcePaths: []string{"/one"},
-		MessageCount: 2, Updated: "2024-01-01T00:00:00Z",
+		MessageCount: 5, MatchCount: 2, Updated: "2024-01-01T00:00:00Z",
 	}}
 	var buf bytes.Buffer
 	RenderSearch(&buf, "alpha", hits)
@@ -330,17 +330,33 @@ func TestRenderTableColorsStatusAfterTruncate(t *testing.T) {
 	}
 }
 
-func TestRenderTableZeroStatusColDoesNotColorID(t *testing.T) {
+func TestRenderTableColorsZeroStatusCol(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("CLICOLOR_FORCE", "1")
 	var buf bytes.Buffer
 	RenderTable(&buf, Table{
-		Headers: []string{"ID", "TITLE"},
-		Rows:    [][]string{{"candidate-1", "Use SQLite"}},
+		Headers:   []string{"STATUS", "TITLE"},
+		Rows:      [][]string{{"approved", "Use SQLite"}},
+		StatusCol: 0,
+	})
+	styled := NewTheme(io.Discard).Status("approved").Render("approved")
+	if !strings.Contains(buf.String(), styled) {
+		t.Fatalf("status column 0 not colored: %q", buf.String())
+	}
+}
+
+func TestRenderTableNegativeStatusColDisablesColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "1")
+	var buf bytes.Buffer
+	RenderTable(&buf, Table{
+		Headers:   []string{"ID", "TITLE"},
+		Rows:      [][]string{{"candidate-1", "Use SQLite"}},
+		StatusCol: -1,
 	})
 	styled := NewTheme(io.Discard).Status("candidate-1").Render("candidate-1")
 	if strings.Contains(buf.String(), styled) {
-		t.Fatalf("unset StatusCol colored column 0: %q", buf.String())
+		t.Fatalf("disabled StatusCol colored column 0: %q", buf.String())
 	}
 }
 

@@ -53,7 +53,7 @@ func testHits() []index.SearchResult {
 		{
 			Tool: "codex", SessionID: "session-alpha", Title: "Alpha deploy",
 			CWD: "/workspace/alpha", Created: "2024-01-01T00:00:00Z", Updated: "2024-01-02T00:00:00Z",
-			MessageCount: 4, Snippets: []string{"deploy alpha"}, LastUser: "deploy alpha", LastAssistant: "ok",
+			MessageCount: 10, MatchCount: 4, Snippets: []string{"deploy alpha"}, LastUser: "deploy alpha", LastAssistant: "ok",
 		},
 		{
 			Tool: "grok", SessionID: "session-beta", Title: "Beta search",
@@ -401,6 +401,19 @@ func TestMoveAndLoadDetail(t *testing.T) {
 	view := m.View().Content
 	if !strings.Contains(view, "deploy alpha") || !strings.Contains(view, "transcript") {
 		t.Fatalf("detail view missing transcript: %q", view)
+	}
+}
+
+func TestDetailCountUsesMatchesForQueryAndMessagesForBrowse(t *testing.T) {
+	queryModel := newTestModel(t)
+	if detail := queryModel.detailContent(); !strings.Contains(detail, "matches: 4") || strings.Contains(detail, "matches: 10") {
+		t.Fatalf("query detail count = %q", detail)
+	}
+
+	browseModel := New(Config{Limit: 20}, fakeStore{hits: testHits()[:1]}, io.Discard)
+	browseModel = apply(t, browseModel, searchMsg{results: testHits()[:1]})
+	if detail := browseModel.detailContent(); !strings.Contains(detail, "messages: 10") {
+		t.Fatalf("browse detail count = %q", detail)
 	}
 }
 

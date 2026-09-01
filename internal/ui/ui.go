@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/BayInl/session-finder/internal/brand"
+	"github.com/BayInl/session-finder/internal/index"
 	"golang.org/x/term"
 )
 
@@ -131,11 +132,26 @@ func PrintVersion(w io.Writer, version, commit, date string) {
 // SearchHit is a presentation DTO for one search result.
 type SearchHit struct {
 	Tool, SessionID, Title, CWD, Created, Updated string
-	MessageCount                                  int
+	MessageCount, MatchCount                      int
 	Snippets                                      []string
 	SourcePaths                                   []string
 	LastUser                                      string
 	LastAssistant                                 string
+}
+
+// HitsFromResults converts index results into presentation DTOs.
+func HitsFromResults(results []index.SearchResult) []SearchHit {
+	hits := make([]SearchHit, len(results))
+	for i, result := range results {
+		hits[i] = SearchHit{
+			Tool: result.Tool, SessionID: result.SessionID, Title: result.Title,
+			CWD: result.CWD, Created: result.Created, Updated: result.Updated,
+			MessageCount: result.MessageCount, MatchCount: result.MatchCount,
+			Snippets: result.Snippets, SourcePaths: result.SourcePaths,
+			LastUser: result.LastUser, LastAssistant: result.LastAssistant,
+		}
+	}
+	return hits
 }
 
 // ShowMessage is a presentation DTO for one show row.
@@ -143,12 +159,24 @@ type ShowMessage struct {
 	Tool, SessionID, Title, CWD, Role, Timestamp, Text string
 }
 
+// MessagesFromRows converts index rows into presentation DTOs.
+func MessagesFromRows(rows []index.ShowRow) []ShowMessage {
+	out := make([]ShowMessage, len(rows))
+	for i, row := range rows {
+		out[i] = ShowMessage{
+			Tool: row.Tool, SessionID: row.SessionID, Title: row.Title, CWD: row.CWD,
+			Role: row.Role, Timestamp: row.Timestamp, Text: row.Text,
+		}
+	}
+	return out
+}
+
 // Table is a TTY table. Pipe/TSV callers do not use this type.
 type Table struct {
 	Headers []string
 	Rows    [][]string
 	// StatusCol is the 0-based column colored with Theme.Status.
-	// Zero (the unset value) disables coloring so ID columns are not styled.
+	// A negative value disables status coloring.
 	StatusCol int
 }
 

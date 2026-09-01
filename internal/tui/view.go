@@ -217,11 +217,11 @@ func (m Model) detailContent() string {
 	fmt.Fprintf(&b, "title: %s\n", dash(hit.Title))
 	fmt.Fprintf(&b, "cwd: %s\n", dash(hit.CWD))
 	fmt.Fprintf(&b, "time: %s .. %s  %s\n", dash(hit.Created), dash(hit.Updated), ui.RelativeTime(hit.Updated))
-	countLabel := "messages"
+	countLabel, count := "messages", hit.MessageCount
 	if strings.TrimSpace(m.query) != "" {
-		countLabel = "matches"
+		countLabel, count = "matches", hit.MatchCount
 	}
-	fmt.Fprintf(&b, "%s: %d\n\n", countLabel, hit.MessageCount)
+	fmt.Fprintf(&b, "%s: %d\n\n", countLabel, count)
 
 	userText, assistantText := hit.LastUser, hit.LastAssistant
 	if userText == "" && assistantText == "" {

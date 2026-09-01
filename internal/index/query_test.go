@@ -220,7 +220,7 @@ func TestSearchLegacySessionANDAndPunctuationTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || results[0].SessionID != "split" || results[0].MessageCount != 2 {
+	if len(results) != 1 || results[0].SessionID != "split" || results[0].MessageCount != 2 || results[0].MatchCount != 2 {
 		t.Fatalf("session-level AND results = %#v", results)
 	}
 	if len(results[0].Snippets) != 2 || !strings.Contains(strings.Join(results[0].Snippets, " "), "apple") ||
@@ -232,7 +232,7 @@ func TestSearchLegacySessionANDAndPunctuationTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || results[0].SessionID != "punctuated" || results[0].MessageCount != 2 {
+	if len(results) != 1 || results[0].SessionID != "punctuated" || results[0].MessageCount != 2 || results[0].MatchCount != 2 {
 		t.Fatalf("punctuation-token results = %#v", results)
 	}
 	if strings.Contains(strings.Join(results[0].Snippets, " "), "session only") {

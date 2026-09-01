@@ -22,6 +22,8 @@ import (
 	"github.com/BayInl/session-finder/internal/record"
 )
 
+const titleLimit = 120
+
 var (
 	uuidRE       = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 	workspaceRE  = regexp.MustCompile(`(?:Workspace Path|工作区路径):\s*(.+)`)
@@ -49,12 +51,7 @@ func Discover() ([]record.SourceSpec, error) {
 	for _, path := range matchingFiles(grokRoot, func(path string, d os.DirEntry) bool {
 		return d.Name() == "chat_history.jsonl"
 	}) {
-		summary := filepath.Join(filepath.Dir(path), "summary.json")
-		aux := []string{}
-		if isFile(summary) {
-			aux = append(aux, summary)
-		}
-		specs = append(specs, record.SourceSpec{Tool: "grok", Path: path, AuxiliaryPath: aux})
+		specs = append(specs, record.SourceSpec{Tool: "grok", Path: path})
 	}
 
 	codexRoot := filepath.Join(home, ".codex", "sessions")
@@ -128,11 +125,7 @@ func Parse(spec record.SourceSpec, emit Emit) error {
 	case "opencode":
 		return Opencode(spec.Path, "", emit)
 	case "grok":
-		var summary string
-		if len(spec.AuxiliaryPath) > 0 {
-			summary = spec.AuxiliaryPath[0]
-		}
-		return Grok(spec.Path, summary, emit)
+		return Grok(spec.Path, filepath.Join(filepath.Dir(spec.Path), "summary.json"), emit)
 	case "codex":
 		return Codex(spec.Path, emit)
 	case "kimi-code":
@@ -205,10 +198,7 @@ func NormalizeRole(role any, text string) string {
 }
 
 // TitleFromText creates a compact fallback title from a user message.
-func TitleFromText(text string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
+func TitleFromText(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return ""
@@ -216,8 +206,8 @@ func TitleFromText(text string, limit int) string {
 	first := strings.Split(trimmed, "\n")[0]
 	first = strings.Join(strings.Fields(first), " ")
 	runes := []rune(first)
-	if len(runes) > limit {
-		runes = runes[:limit]
+	if len(runes) > titleLimit {
+		runes = runes[:titleLimit]
 	}
 	return string(runes)
 }

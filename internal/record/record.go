@@ -25,11 +25,10 @@ type MessageRecord struct {
 	SourcePath string
 }
 
-// SourceSpec describes a source file and optional metadata files used to parse it.
+// SourceSpec describes a source file to parse.
 type SourceSpec struct {
-	Tool          string
-	Path          string
-	AuxiliaryPath []string
+	Tool string
+	Path string
 }
 
 func (s SourceSpec) String() string { return filepath.Clean(s.Path) }
