@@ -76,12 +76,10 @@ supports:
 
 ### Output modes
 
-In a terminal, each hit shows the session header plus the last human/assistant
-round (wrapped to the terminal width). Piped output stays a single compact line
-per session. Use `--verbose` for full result cards, `--json` for
+On a real terminal, search opens the TUI. Piped output is one compact line per
+session. `--plain` forces that print format instead of the TUI. `--json` emits
 machine-readable output (`last_user` / `last_assistant` are included when
-present). Colors follow `NO_COLOR`; column width adapts to the terminal.
-`--include-system` (alias `--all`) includes system/noise records.
+present). `--all` includes system/noise records.
 
 Show the message stream for a full session ID or unique ID prefix:
 

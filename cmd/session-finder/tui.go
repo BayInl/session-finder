@@ -1,10 +1,8 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"os"
-	"strings"
 
 	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/tui"
@@ -37,11 +35,9 @@ func parseTUIArgs(argv []string) (tui.Config, bool, error) {
 	after := set.String("after", "", "only sessions on or after YYYY-MM-DD")
 	limit := set.Int("limit", 100, "maximum sessions to show")
 	dbPath := set.String("db", "", "path to the SQLite index database")
-	var includeSystem bool
-	set.BoolVar(&includeSystem, "all", false, "include system/noise records (default hides them)")
-	set.BoolVar(&includeSystem, "include-system", false, "alias for --all")
+	includeSystem := set.Bool("all", false, "include system/noise records")
 	ui.AttachUsage(set, brand.Usage("tui [query] [flags]"), "Browse indexed sessions in a full-screen TUI.", []ui.FlagGroup{
-		{Title: "Filter", Names: []string{"tool", "cwd", "after", "all", "include-system", "limit"}},
+		{Title: "Filter", Names: []string{"tool", "cwd", "after", "all", "limit"}},
 		{Title: "Database", Names: []string{"db"}},
 	})
 	query, helpRequested, err := parseOptionalArg(set, argv, "tui")
@@ -56,43 +52,8 @@ func parseTUIArgs(argv []string) (tui.Config, bool, error) {
 	}
 	return tui.Config{
 		Query: query, Tool: *tool, CWD: *cwd, After: *after,
-		Limit: *limit, DBPath: *dbPath, IncludeSystem: includeSystem,
+		Limit: *limit, DBPath: *dbPath, IncludeSystem: *includeSystem,
 	}, false, nil
-}
-
-func parseOptionalArg(set *flag.FlagSet, argv []string, command string) (string, bool, error) {
-	flags := make([]string, 0, len(argv))
-	positionals := make([]string, 0, 1)
-	for i := 0; i < len(argv); i++ {
-		arg := argv[i]
-		if arg == "--" {
-			positionals = append(positionals, argv[i+1:]...)
-			break
-		}
-		if strings.HasPrefix(arg, "-") {
-			flags = append(flags, arg)
-			name := strings.TrimLeft(strings.SplitN(arg, "=", 2)[0], "-")
-			if !strings.Contains(arg, "=") && (name == "tool" || name == "cwd" || name == "after" || name == "limit" || name == "role" || name == "db") && i+1 < len(argv) {
-				flags = append(flags, argv[i+1])
-				i++
-			}
-			continue
-		}
-		positionals = append(positionals, arg)
-	}
-	if err := set.Parse(flags); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return "", true, nil
-		}
-		return "", false, ui.Printed(err)
-	}
-	if len(positionals) > 1 {
-		return "", false, usageError(command + " accepts at most one query")
-	}
-	if len(positionals) == 1 {
-		return positionals[0], false, nil
-	}
-	return "", false, nil
 }
 
 func wantsTUI(asJSON, asPlain bool) bool {

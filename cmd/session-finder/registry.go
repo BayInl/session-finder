@@ -1,11 +1,7 @@
 package main
 
 import (
-	"fmt"
-	"strings"
-
 	commandregistry "github.com/BayInl/session-finder/cmd/session-finder/registry"
-	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/decisions"
 	_ "github.com/BayInl/session-finder/internal/skill"
 )
@@ -36,8 +32,4 @@ func runRegistered(name string, argv []string) error {
 		return usageError("unknown command: " + name)
 	}
 	return err
-}
-
-func rootUsage() string {
-	return fmt.Sprintf("usage: %s <%s> [flags]", brand.Name, strings.Join(Commands(), "|"))
 }

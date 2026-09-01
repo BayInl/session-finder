@@ -107,14 +107,11 @@ func runSearch(argv []string) error {
 	limit := set.Int("limit", 20, "maximum sessions to show")
 	asJSON := set.Bool("json", false, "emit JSON")
 	asPlain := set.Bool("plain", false, "print results instead of opening the TUI")
-	var includeSystem bool
-	set.BoolVar(&includeSystem, "all", false, "include system/noise records (default hides them)")
-	set.BoolVar(&includeSystem, "include-system", false, "alias for --all")
-	verbose := set.Bool("verbose", false, "show full result cards")
+	includeSystem := set.Bool("all", false, "include system/noise records")
 	dbPath := set.String("db", "", "path to the SQLite index database")
 	ui.AttachUsage(set, brand.Usage("search <query> [flags]"), "Search indexed session transcripts.", []ui.FlagGroup{
-		{Title: "Filter", Names: []string{"tool", "cwd", "after", "all", "include-system", "limit"}},
-		{Title: "Output", Names: []string{"json", "plain", "verbose"}},
+		{Title: "Filter", Names: []string{"tool", "cwd", "after", "all", "limit"}},
+		{Title: "Output", Names: []string{"json", "plain"}},
 		{Title: "Database", Names: []string{"db"}},
 	})
 	query, helpRequested, err := parseFlagsAndArg(set, argv, "search")
@@ -133,7 +130,7 @@ func runSearch(argv []string) error {
 	if wantsTUI(*asJSON, *asPlain) {
 		return launchTUI(tui.Config{
 			Query: query, Tool: *tool, CWD: *cwd, After: *after,
-			Limit: *limit, DBPath: *dbPath, IncludeSystem: includeSystem,
+			Limit: *limit, DBPath: *dbPath, IncludeSystem: *includeSystem,
 		})
 	}
 	db, err := index.Open(*dbPath)
@@ -144,7 +141,7 @@ func runSearch(argv []string) error {
 	if err := index.InitializeSchema(db); err != nil {
 		return err
 	}
-	results, err := index.Search(db, query, *tool, *cwd, *after, *limit, includeSystem)
+	results, err := index.Search(db, query, *tool, *cwd, *after, *limit, *includeSystem)
 	if err != nil {
 		return err
 	}
@@ -156,7 +153,7 @@ func runSearch(argv []string) error {
 		}{Query: query, Count: len(results), Results: results}
 		return ui.WriteJSON(os.Stdout, payload)
 	}
-	ui.RenderSearch(os.Stdout, query, searchHits(results), *verbose)
+	ui.RenderSearch(os.Stdout, query, tui.HitsFromResults(results))
 	return nil
 }
 
@@ -204,11 +201,19 @@ func runShow(argv []string) error {
 	if err != nil {
 		return err
 	}
-	ui.RenderShow(os.Stdout, showMessages(rows))
+	ui.RenderShow(os.Stdout, tui.MessagesFromRows(rows))
 	return nil
 }
 
 func parseFlagsAndArg(set *flag.FlagSet, argv []string, command string) (string, bool, error) {
+	return parseCommandArg(set, argv, command, true)
+}
+
+func parseOptionalArg(set *flag.FlagSet, argv []string, command string) (string, bool, error) {
+	return parseCommandArg(set, argv, command, false)
+}
+
+func parseCommandArg(set *flag.FlagSet, argv []string, command string, required bool) (string, bool, error) {
 	// Python argparse accepts options both before and after the positional
 	// argument. Go's standard flag package stops at the first positional, so
 	// parse a reordered copy and return the sole positional argument.
@@ -237,41 +242,14 @@ func parseFlagsAndArg(set *flag.FlagSet, argv []string, command string) (string,
 		}
 		return "", false, ui.Printed(err)
 	}
-	if len(positionals) != 1 {
+	if required && len(positionals) != 1 {
 		return "", false, usageError(command + " requires exactly one positional argument")
 	}
-	return positionals[0], false, nil
-}
-
-func searchHits(results []index.SearchResult) []ui.SearchHit {
-	hits := make([]ui.SearchHit, len(results))
-	for i, result := range results {
-		hits[i] = ui.SearchHit{
-			Tool: result.Tool, SessionID: result.SessionID, Title: result.Title,
-			CWD: result.CWD, Created: result.Created, Updated: result.Updated,
-			MessageCount: result.MessageCount, Snippets: result.Snippets, SourcePaths: result.SourcePaths,
-			LastUser: result.LastUser, LastAssistant: result.LastAssistant,
-		}
+	if !required && len(positionals) > 1 {
+		return "", false, usageError(command + " accepts at most one query")
 	}
-	return hits
-}
-
-func showMessages(rows []index.ShowRow) []ui.ShowMessage {
-	out := make([]ui.ShowMessage, len(rows))
-	for i, row := range rows {
-		out[i] = ui.ShowMessage{
-			Tool: row.Tool, SessionID: row.SessionID, Title: row.Title, CWD: row.CWD,
-			Role: row.Role, Timestamp: row.Timestamp, Text: row.Text,
-		}
+	if len(positionals) == 1 {
+		return positionals[0], false, nil
 	}
-	return out
+	return "", false, nil
 }
-
-func colorText(code, value string) string    { return ui.LegacySGR(os.Stdout, code, value) }
-func truncateCells(s string, max int) string { return ui.Truncate(s, max) }
-func displayWidth(s string) int              { return ui.DisplayWidth(s) }
-func stripANSIAndControls(s string) string   { return ui.StripANSI(s) }
-func plainField(s string) string             { return ui.PlainField(s) }
-func pathSummary(p []string) string          { return ui.PathSummary(p) }
-func relativeTime(ts string) string          { return ui.RelativeTime(ts) }
-func pythonStyleRepr(s string) string        { return ui.PythonQuote(s) }

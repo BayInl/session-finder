@@ -79,7 +79,7 @@ func Run(cfg Config) error {
 	return err
 }
 
-func hitsFromResults(results []index.SearchResult) []ui.SearchHit {
+func HitsFromResults(results []index.SearchResult) []ui.SearchHit {
 	hits := make([]ui.SearchHit, len(results))
 	for i, result := range results {
 		hits[i] = ui.SearchHit{
@@ -92,7 +92,7 @@ func hitsFromResults(results []index.SearchResult) []ui.SearchHit {
 	return hits
 }
 
-func showFromRows(rows []index.ShowRow) []ui.ShowMessage {
+func MessagesFromRows(rows []index.ShowRow) []ui.ShowMessage {
 	out := make([]ui.ShowMessage, len(rows))
 	for i, row := range rows {
 		out[i] = ui.ShowMessage{

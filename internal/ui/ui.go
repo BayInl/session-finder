@@ -155,14 +155,6 @@ func PrintVersion(w io.Writer, version, commit, date string) {
 		brand.Name, version, muted.Render("commit:"), commit, muted.Render("date:"), date)
 }
 
-// LegacySGR wraps value in SGR when ColorEnabled(w). Used by the main-package colorText wrapper.
-func LegacySGR(w io.Writer, code, value string) string {
-	if !ColorEnabled(w) {
-		return value
-	}
-	return "\x1b[" + code + "m" + value + "\x1b[0m"
-}
-
 // SearchHit is a presentation DTO for one search result.
 type SearchHit struct {
 	Tool, SessionID, Title, CWD, Created, Updated string

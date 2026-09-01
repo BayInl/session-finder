@@ -90,8 +90,27 @@ func TestPlainFieldPathSummaryRelativeTime(t *testing.T) {
 }
 
 func TestPythonQuote(t *testing.T) {
-	if got := PythonQuote("alpha"); got != "'alpha'" {
-		t.Fatalf("PythonQuote = %q", got)
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "plain", value: "alpha", want: "'alpha'"},
+		{name: "single quote chooses double", value: "a'b", want: `"a'b"`},
+		{name: "double quote", value: `a"b`, want: `'a"b'`},
+		{name: "both quotes", value: `a'b"c`, want: `'a\'b"c'`},
+		{name: "backslash", value: `a\b`, want: `'a\\b'`},
+		{name: "newlines", value: "a\nb\tc\rd", want: `'a\nb\tc\rd'`},
+		{name: "control", value: string([]byte{0x01, 0x1f, 0x7f}), want: `'\x01\x1f\x7f'`},
+		{name: "unicode", value: "é🙂", want: "'é🙂'"},
+		{name: "unicode escape", value: "\u2028", want: `'\u2028'`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := PythonQuote(test.value); got != test.want {
+				t.Fatalf("PythonQuote(%q) = %q, want %q", test.value, got, test.want)
+			}
+		})
 	}
 }
 
@@ -104,7 +123,7 @@ func TestRenderSearchPipeHasNoANSI(t *testing.T) {
 		MessageCount: 2, Updated: "2024-01-01T00:00:00Z",
 	}}
 	var buf bytes.Buffer
-	RenderSearch(&buf, "alpha", hits, true)
+	RenderSearch(&buf, "alpha", hits)
 	out := buf.String()
 	if strings.Contains(out, "\x1b") {
 		t.Fatalf("pipe search leaked ANSI: %q", out)
@@ -120,40 +139,6 @@ func TestRenderSearchPipeHasNoANSI(t *testing.T) {
 	}
 	if strings.Count(strings.TrimSpace(out), "\n") != 1 {
 		t.Fatalf("want header + one compact line, got %q", out)
-	}
-}
-
-func TestWriteLastRoundShowsUserAndAssistant(t *testing.T) {
-	t.Setenv("CLICOLOR_FORCE", "")
-	t.Setenv("NO_COLOR", "1")
-	var buf bytes.Buffer
-	theme := NewTheme(&buf)
-	writeLastRound(&buf, SearchHit{
-		LastUser:      "please search hello in the index",
-		LastAssistant: "I found three matching sessions",
-	}, "hello", theme, theme.Style(TokenPrimary), 80, 4)
-	out := buf.String()
-	if !strings.Contains(out, "user: please search hello in the index") {
-		t.Fatalf("missing user line: %q", out)
-	}
-	if !strings.Contains(out, "assistant: I found three matching sessions") {
-		t.Fatalf("missing assistant line: %q", out)
-	}
-}
-
-func TestWriteLastRoundDoesNotOverflowWidth(t *testing.T) {
-	t.Setenv("NO_COLOR", "1")
-	t.Setenv("CLICOLOR_FORCE", "")
-	width := 80
-	longASCII := strings.Repeat("abcdefghij ", 40)
-	longCJK := strings.Repeat("中文测试内容宽度检查", 20)
-	var buf bytes.Buffer
-	theme := NewTheme(&buf)
-	writeLastRound(&buf, SearchHit{LastUser: longASCII, LastAssistant: longCJK}, "ab", theme, theme.Style(TokenPrimary), width, 8)
-	for i, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
-		if DisplayWidth(line) > width {
-			t.Fatalf("line %d width %d > %d: %q", i, DisplayWidth(line), width, line)
-		}
 	}
 }
 

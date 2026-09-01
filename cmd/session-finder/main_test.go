@@ -8,31 +8,6 @@ import (
 	"testing"
 )
 
-func TestPythonStyleRepr(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-		want  string
-	}{
-		{name: "plain", value: "alpha", want: "'alpha'"},
-		{name: "single quote chooses double", value: "a'b", want: `"a'b"`},
-		{name: "double quote", value: `a"b`, want: `'a"b'`},
-		{name: "both quotes", value: `a'b"c`, want: `'a\'b"c'`},
-		{name: "backslash", value: `a\b`, want: `'a\\b'`},
-		{name: "newlines", value: "a\nb\tc\rd", want: `'a\nb\tc\rd'`},
-		{name: "control", value: string([]byte{0x01, 0x1f, 0x7f}), want: `'\x01\x1f\x7f'`},
-		{name: "unicode", value: "é🙂", want: "'é🙂'"},
-		{name: "unicode escape", value: "\u2028", want: `'\u2028'`},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := pythonStyleRepr(test.value); got != test.want {
-				t.Fatalf("pythonStyleRepr(%q) = %q, want %q", test.value, got, test.want)
-			}
-		})
-	}
-}
-
 func TestPrintRootUsageDoesNotDuplicateFlags(t *testing.T) {
 	original := os.Stdout
 	reader, writer, err := os.Pipe()
