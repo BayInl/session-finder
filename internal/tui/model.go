@@ -171,16 +171,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
+	case tea.KeyMsg:
+		if _, ok := msg.(tea.KeyReleaseMsg); ok {
+			return m, nil
+		}
 	}
 	return m, nil
+}
+
+func bindingHit(msg tea.KeyPressMsg, b key.Binding) bool {
+	if key.Matches(msg, b) {
+		return true
+	}
+	s, stroke := msg.String(), msg.Keystroke()
+	for _, name := range b.Keys() {
+		if s == name || stroke == name {
+			return true
+		}
+		if name == "esc" && (msg.Code == tea.KeyEsc || s == "escape") {
+			return true
+		}
+		if name == "enter" && (msg.Code == tea.KeyEnter || s == "return") {
+			return true
+		}
+	}
+	return false
+}
+
+func isEsc(msg tea.KeyPressMsg) bool {
+	return msg.Code == tea.KeyEsc || msg.String() == "esc" || msg.String() == "escape" || msg.Keystroke() == "esc"
 }
 
 func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.showHelp {
 		switch {
-		case key.Matches(msg, m.keys.Quit):
+		case bindingHit(msg, m.keys.Quit):
 			return m, tea.Quit
-		case key.Matches(msg, m.keys.Help), key.Matches(msg, m.keys.Back), msg.String() == "q":
+		case bindingHit(msg, m.keys.Help), bindingHit(msg, m.keys.Back), msg.String() == "q", isEsc(msg):
 			m.showHelp = false
 			return m, nil
 		}
@@ -192,26 +219,29 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
-	case key.Matches(msg, m.keys.Quit):
+	case bindingHit(msg, m.keys.Quit):
 		return m, tea.Quit
-	case key.Matches(msg, m.keys.Help):
+	case bindingHit(msg, m.keys.Help):
 		m.showHelp = true
 		return m, nil
-	case key.Matches(msg, m.keys.Search):
+	case bindingHit(msg, m.keys.Search):
 		m.searching = true
 		m.input.SetValue(m.query)
 		m.input.CursorEnd()
 		return m, m.input.Focus()
-	case key.Matches(msg, m.keys.Back):
+	case bindingHit(msg, m.keys.Back):
+		if isEsc(msg) {
+			return m.escBack()
+		}
 		return m.goBack()
-	case key.Matches(msg, m.keys.Focus):
+	case bindingHit(msg, m.keys.Focus):
 		if m.focus == paneList {
 			m.focus = paneDetail
 		} else {
 			m.focus = paneList
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.ToolCycle):
+	case bindingHit(msg, m.keys.ToolCycle):
 		m.tool = nextTool(m.tool)
 		m.loading = true
 		return m, m.searchCmd()
@@ -226,26 +256,26 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.searchCmd()
 		}
-	case key.Matches(msg, m.keys.Load):
+	case bindingHit(msg, m.keys.Load):
 		hit := m.selectedHit()
 		if hit == nil {
 			return m, nil
 		}
 		m.focus = paneDetail
 		return m, m.showCmd(hit.SessionID)
-	case key.Matches(msg, m.keys.PageUp):
+	case bindingHit(msg, m.keys.PageUp):
 		m.viewport.PageUp()
 		return m, nil
-	case key.Matches(msg, m.keys.PageDown):
+	case bindingHit(msg, m.keys.PageDown):
 		m.viewport.PageDown()
 		return m, nil
-	case key.Matches(msg, m.keys.HalfUp):
+	case bindingHit(msg, m.keys.HalfUp):
 		m.viewport.HalfPageUp()
 		return m, nil
-	case key.Matches(msg, m.keys.HalfDown):
+	case bindingHit(msg, m.keys.HalfDown):
 		m.viewport.HalfPageDown()
 		return m, nil
-	case key.Matches(msg, m.keys.Top):
+	case bindingHit(msg, m.keys.Top):
 		if m.focus == paneDetail {
 			m.viewport.GotoTop()
 		} else {
@@ -253,7 +283,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.refreshDetail()
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.Bottom):
+	case bindingHit(msg, m.keys.Bottom):
 		if m.focus == paneDetail {
 			m.viewport.GotoBottom()
 		} else if n := len(m.list.Items()); n > 0 {
@@ -261,7 +291,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.refreshDetail()
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.Up):
+	case bindingHit(msg, m.keys.Up):
 		if m.focus == paneDetail {
 			m.viewport.ScrollUp(1)
 		} else {
@@ -269,7 +299,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.refreshDetail()
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.Down):
+	case bindingHit(msg, m.keys.Down):
 		if m.focus == paneDetail {
 			m.viewport.ScrollDown(1)
 		} else {
@@ -282,15 +312,15 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c", msg.Keystroke() == "ctrl+c", msg.String() == "ctrl+q":
 		return m, tea.Quit
-	case "esc":
+	case isEsc(msg):
 		m.searching = false
 		m.input.Blur()
 		m.input.SetValue(m.query)
 		return m, nil
-	case "enter":
+	case msg.String() == "enter", msg.String() == "return", msg.Code == tea.KeyEnter:
 		m.searching = false
 		m.input.Blur()
 		m.query = strings.TrimSpace(m.input.Value())
@@ -301,6 +331,20 @@ func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m Model) escBack() (tea.Model, tea.Cmd) {
+	if m.searching {
+		m.searching = false
+		m.input.Blur()
+		m.input.SetValue(m.query)
+		return m, nil
+	}
+	if m.focus == paneDetail {
+		m.focus = paneList
+		return m, nil
+	}
+	return m, tea.Quit
 }
 
 func (m Model) goBack() (tea.Model, tea.Cmd) {
@@ -331,7 +375,7 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, m.searchCmd()
 	}
-	return m, nil
+	return m, tea.Quit
 }
 
 func (m *Model) setListItems(hits []ui.SearchHit) {

@@ -22,11 +22,11 @@ type keyMap struct {
 
 func newKeyMap() keyMap {
 	return keyMap{
-		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c", "ctrl+q"), key.WithHelp("q/esc", "quit")),
 		Search:    key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Up:        key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("j/k", "move")),
 		Down:      key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/k", "move")),
-		Load:      key.NewBinding(key.WithKeys("enter", "l"), key.WithHelp("enter/l", "load")),
+		Load:      key.NewBinding(key.WithKeys("enter", "return", "l"), key.WithHelp("enter/l", "load")),
 		Back:      key.NewBinding(key.WithKeys("esc", "h"), key.WithHelp("esc/h", "back")),
 		Focus:     key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "pane")),
 		ToolCycle: key.NewBinding(key.WithKeys("t"), key.WithHelp("t/1-5", "tool")),

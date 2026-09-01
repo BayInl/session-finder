@@ -125,6 +125,8 @@ func keyPress(stroke string) tea.KeyPressMsg {
 	switch stroke {
 	case "ctrl+c":
 		return tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'c'}
+	case "ctrl+q":
+		return tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'q'}
 	case "ctrl+u":
 		return tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'u'}
 	case "ctrl+d":
@@ -189,8 +191,9 @@ func TestShouldLaunchHonorsDumbTermOnTTY(t *testing.T) {
 }
 
 func TestQuitKeys(t *testing.T) {
-	for _, stroke := range []string{"q", "ctrl+c"} {
+	for _, stroke := range []string{"q", "ctrl+c", "ctrl+q", "esc"} {
 		m := newTestModel(t)
+		m.focus = paneList
 		_, cmd := m.Update(keyPress(stroke))
 		if cmd == nil {
 			t.Fatalf("%s: expected quit cmd", stroke)
@@ -198,6 +201,27 @@ func TestQuitKeys(t *testing.T) {
 		if _, ok := cmd().(tea.QuitMsg); !ok {
 			t.Fatalf("%s: expected QuitMsg, got %T", stroke, cmd())
 		}
+	}
+}
+
+func TestEscFromDetailThenQuits(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{hits: testHits(), rows: testRows()}, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = applyKey(t, m, "enter")
+	if m.focus != paneDetail {
+		t.Fatal("enter should focus detail")
+	}
+	m = applyKey(t, m, "esc")
+	if m.focus != paneList {
+		t.Fatal("esc from detail should return to list, not quit")
+	}
+	_, cmd := m.Update(keyPress("esc"))
+	if cmd == nil {
+		t.Fatal("esc on list should quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected QuitMsg, got %T", cmd())
 	}
 }
 
