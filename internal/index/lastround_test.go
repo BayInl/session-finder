@@ -1,6 +1,7 @@
 package index
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -61,5 +62,50 @@ func TestAttachLastRoundsSkipsToolCalls(t *testing.T) {
 	}
 	if results[0].LastUser != "how do we polish the CLI?" || results[0].LastAssistant != "use lipgloss for TTY output" {
 		t.Fatalf("last round = %#v", results[0])
+	}
+}
+
+func TestAttachLastRoundsChunksLargeResultSets(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	// The unchunked query uses two parameters per result and exceeds SQLite's
+	// default 32766-variable ceiling at this size.
+	results := make([]SearchResult, 17000)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range results {
+		sessionID := fmt.Sprintf("session-%03d", i)
+		result, err := tx.Exec(`INSERT INTO sessions(tool, session_id, source_path) VALUES ('codex', ?, ?)`, sessionID, "/"+sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := result.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`INSERT INTO messages(session_pk, role, ts, text) VALUES (?, 'user', ?, ?)`, id, i, "user "+sessionID); err != nil {
+			t.Fatal(err)
+		}
+		results[i] = SearchResult{Tool: "codex", SessionID: sessionID}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := AttachLastRounds(db, results); err != nil {
+		t.Fatal(err)
+	}
+	for i, result := range results {
+		want := fmt.Sprintf("user session-%03d", i)
+		if result.LastUser != want {
+			t.Fatalf("result %d LastUser = %q, want %q", i, result.LastUser, want)
+		}
 	}
 }

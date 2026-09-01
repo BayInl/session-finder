@@ -20,13 +20,6 @@ func TestParseQueryFieldsBooleanAndEscapes(t *testing.T) {
 		!reflect.DeepEqual(filters.afters, []string{"2024-01-02"}) {
 		t.Fatalf("filters = %#v", filters)
 	}
-	debug, err := queryDebugString(`tool:codex cwd:"/work space" after:2024-01-02 (alpha OR "beta gamma") NOT escaped\ AND`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(debug, "tool:codex") || !strings.Contains(debug, `"beta gamma"`) || !strings.Contains(debug, "NOT escaped AND") {
-		t.Fatalf("debug query = %q", debug)
-	}
 }
 
 func TestPositiveTermsSkipsBooleanAndFields(t *testing.T) {
@@ -244,5 +237,61 @@ func TestSearchLegacySessionANDAndPunctuationTokens(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(results[0].Snippets, " "), "session only") {
 		t.Fatalf("punctuation snippets contain unrelated message: %#v", results[0].Snippets)
+	}
+}
+
+func TestCandidateIDsPropagatesFTSErrors(t *testing.T) {
+	for _, table := range []string{"messages_fts", "messages_tri"} {
+		t.Run(table, func(t *testing.T) {
+			db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := InitializeSchema(db); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec("DROP TABLE " + table); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := candidateIDsForTerm(db, "alpha", "", "", "", queryFilters{}, false); err == nil || !strings.Contains(err.Error(), table) {
+				t.Fatalf("candidateIDsForTerm error = %v, want %s failure", err, table)
+			}
+		})
+	}
+}
+
+func TestCandidateIDsAreNotTruncated(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'large', '/tmp', 'Large', 1, 1, '/large');
+		WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 50001)
+		INSERT INTO messages(session_pk, role, ts, text)
+		SELECT 1, 'user', n, 'alpha repeated' FROM seq;
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := candidateIDsForTerm(db, "alpha", "", "", "", queryFilters{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 50001 {
+		t.Fatalf("FTS candidate count = %d, want 50001", len(ids))
+	}
+	ids, err = queryLikeCandidates(db, "alpha", "", "", "", queryFilters{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 50001 {
+		t.Fatalf("LIKE candidate count = %d, want 50001", len(ids))
 	}
 }

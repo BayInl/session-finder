@@ -24,11 +24,10 @@ const (
 )
 
 type queryToken struct {
-	kind  queryTokenKind
-	text  string
-	raw   string
-	pos   int
-	quote bool
+	kind queryTokenKind
+	text string
+	raw  string
+	pos  int
 }
 
 type queryAtom struct {
@@ -158,7 +157,7 @@ func lexQuery(input string) ([]queryToken, error) {
 				kind = queryOperator
 			}
 		}
-		tokens = append(tokens, queryToken{kind: kind, text: text, raw: raw, pos: start, quote: kind == queryPhrase})
+		tokens = append(tokens, queryToken{kind: kind, text: text, raw: raw, pos: start})
 	}
 	return tokens, nil
 }
@@ -431,21 +430,29 @@ func hasPositiveQueryTerm(expr *queryExpr, negated bool) bool {
 	}
 }
 
-func collectQueryAtoms(expr *queryExpr, negated bool, atoms *[]queryAtom) {
-	if expr == nil {
-		return
-	}
-	switch expr.kind {
-	case queryAtomExpr:
-		if !negated {
-			*atoms = append(*atoms, expr.atom)
+func uniqueQueryAtoms(expr *queryExpr, positiveOnly bool) []queryAtom {
+	seen := make(map[string]bool)
+	atoms := make([]queryAtom, 0)
+	var visit func(*queryExpr, bool)
+	visit = func(node *queryExpr, negated bool) {
+		if node == nil {
+			return
 		}
-	case queryNotExpr:
-		collectQueryAtoms(expr.left, !negated, atoms)
-	default:
-		collectQueryAtoms(expr.left, negated, atoms)
-		collectQueryAtoms(expr.right, negated, atoms)
+		switch node.kind {
+		case queryAtomExpr:
+			if (!positiveOnly || !negated) && !seen[node.atom.key] {
+				seen[node.atom.key] = true
+				atoms = append(atoms, node.atom)
+			}
+		case queryNotExpr:
+			visit(node.left, !negated)
+		default:
+			visit(node.left, negated)
+			visit(node.right, negated)
+		}
 	}
+	visit(expr, false)
+	return atoms
 }
 
 // PositiveTerms returns unique positive query atoms for highlighting.
@@ -455,16 +462,10 @@ func PositiveTerms(query string) []string {
 	if err != nil || expr == nil {
 		return nil
 	}
-	var atoms []queryAtom
-	collectQueryAtoms(expr, false, &atoms)
-	seen := make(map[string]bool, len(atoms))
-	terms := make([]string, 0, len(atoms))
-	for _, atom := range atoms {
-		if seen[atom.key] {
-			continue
-		}
-		seen[atom.key] = true
-		terms = append(terms, atom.value)
+	atoms := uniqueQueryAtoms(expr, true)
+	terms := make([]string, len(atoms))
+	for i, atom := range atoms {
+		terms[i] = atom.value
 	}
 	sort.SliceStable(terms, func(i, j int) bool {
 		return len([]rune(terms[i])) > len([]rune(terms[j]))
@@ -586,8 +587,8 @@ func evalQuery(expr *queryExpr, universeIDs map[int64]struct{}, universe map[int
 type searchMessage struct {
 	id                          int64
 	tool, sessionID, title, cwd string
-	sourcePath, role            string
-	created, updated, ts        any
+	sourcePath                  string
+	created, updated            any
 }
 
 func parseAfterFilter(value string) (float64, error) {
@@ -645,7 +646,7 @@ func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, i
 		return nil, err
 	}
 	query := `SELECT m.id, s.tool, s.session_id, s.title, s.cwd, s.created, s.updated,
-		s.source_path, m.ts, m.role FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk`
+		s.source_path FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -659,7 +660,7 @@ func searchUniverse(db *sql.DB, tool, cwd, after string, filters queryFilters, i
 	for rows.Next() {
 		var row searchMessage
 		if err := rows.Scan(&row.id, &row.tool, &row.sessionID, &row.title, &row.cwd, &row.created,
-			&row.updated, &row.sourcePath, &row.ts, &row.role); err != nil {
+			&row.updated, &row.sourcePath); err != nil {
 			return nil, err
 		}
 		result[row.id] = row
@@ -687,7 +688,7 @@ func searchUniverseByIDs(db *sql.DB, ids []int64, tool, cwd, after string, filte
 		where = append([]string{"m.id IN (" + strings.Join(placeholders, ",") + ")"}, where...)
 		idParams = append(idParams, params...)
 		query := `SELECT m.id, s.tool, s.session_id, s.title, s.cwd, s.created, s.updated,
-			s.source_path, m.ts, m.role FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(where, " AND ") + " ORDER BY m.id"
+			s.source_path FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(where, " AND ") + " ORDER BY m.id"
 		rows, err := db.Query(query, idParams...)
 		if err != nil {
 			return nil, err
@@ -695,7 +696,7 @@ func searchUniverseByIDs(db *sql.DB, ids []int64, tool, cwd, after string, filte
 		for rows.Next() {
 			var row searchMessage
 			if err := rows.Scan(&row.id, &row.tool, &row.sessionID, &row.title, &row.cwd, &row.created,
-				&row.updated, &row.sourcePath, &row.ts, &row.role); err != nil {
+				&row.updated, &row.sourcePath); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -746,15 +747,6 @@ func legacySearchTokens(value string) []string {
 	return tokens
 }
 
-func sortedUniverseIDs(universe map[int64]searchMessage) []int64 {
-	ids := make([]int64, 0, len(universe))
-	for id := range universe {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ids
-}
-
 func queryLikeCandidates(db *sql.DB, value, tool, cwd, after string, filters queryFilters, includeSystem bool) (map[int64]struct{}, error) {
 	where, filterParams, err := searchFilterClauses(tool, cwd, after, filters, includeSystem)
 	if err != nil {
@@ -764,7 +756,7 @@ func queryLikeCandidates(db *sql.DB, value, tool, cwd, after string, filters que
 	params := make([]any, 0, len(filterParams)+1)
 	params = append(params, "%"+escapeLike(value)+"%")
 	params = append(params, filterParams...)
-	query := `SELECT m.id FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(where, " AND ") + " ORDER BY m.id LIMIT 50000"
+	query := `SELECT m.id FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(where, " AND ") + " ORDER BY m.id"
 	rows, err := db.Query(query, params...)
 	if err != nil {
 		return nil, err
@@ -804,10 +796,10 @@ func candidateIDsForTerm(db *sql.DB, value, tool, cwd, after string, filters que
 		params := make([]any, 0, len(filterParams)+1)
 		params = append(params, candidate.match)
 		params = append(params, filterParams...)
-		query := `SELECT m.id FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(queryWhere, " AND ") + " ORDER BY m.id LIMIT 50000"
+		query := `SELECT m.id FROM messages AS m JOIN sessions AS s ON s.id = m.session_pk WHERE ` + strings.Join(queryWhere, " AND ") + " ORDER BY m.id"
 		rows, err := db.Query(query, params...)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("query %s candidates: %w", candidate.table, err)
 		}
 		for rows.Next() {
 			var id int64
@@ -1019,34 +1011,10 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 	if err != nil {
 		return nil, err
 	}
-	var positiveAtoms []queryAtom
-	collectQueryAtoms(expr, false, &positiveAtoms)
-	atoms := make([]queryAtom, 0, len(positiveAtoms))
-	seenAtoms := make(map[string]bool)
-	for _, atom := range positiveAtoms {
-		if !seenAtoms[atom.key] {
-			seenAtoms[atom.key] = true
-			atoms = append(atoms, atom)
-		}
-	}
-	// A negative child still needs a candidate set, even though it does not
+	positiveAtoms := uniqueQueryAtoms(expr, true)
+	// Negative children still need candidate sets even though they do not
 	// contribute to snippets or positive-term ranking.
-	var allExprAtoms func(*queryExpr)
-	allExprAtoms = func(node *queryExpr) {
-		if node == nil {
-			return
-		}
-		if node.kind == queryAtomExpr {
-			if !seenAtoms[node.atom.key] {
-				seenAtoms[node.atom.key] = true
-				atoms = append(atoms, node.atom)
-			}
-			return
-		}
-		allExprAtoms(node.left)
-		allExprAtoms(node.right)
-	}
-	allExprAtoms(expr)
+	atoms := uniqueQueryAtoms(expr, false)
 	candidateSets, err := atomCandidateSets(db, tool, cwd, after, filters, includeSystem, atoms)
 	if err != nil {
 		return nil, err
@@ -1192,54 +1160,4 @@ func Search(db *sql.DB, query, tool, cwd, after string, limit int, includeSystem
 		return nil, err
 	}
 	return results, nil
-}
-
-// Kept for tests and callers that want to inspect the parser without opening
-// SQLite. It intentionally returns a nil expression for a field-only query.
-func parseSearchQuery(query string) (*queryExpr, queryFilters, error) {
-	return parseQuery(query)
-}
-
-// queryDebugString is intentionally small and stable for parser tests and
-// diagnostics; callers should use Search for actual result retrieval.
-func queryDebugString(query string) (string, error) {
-	expr, filters, err := parseQuery(query)
-	if err != nil {
-		return "", err
-	}
-	var render func(*queryExpr) string
-	render = func(node *queryExpr) string {
-		if node == nil {
-			return ""
-		}
-		switch node.kind {
-		case queryAtomExpr:
-			if node.atom.phrase {
-				return `"` + node.atom.value + `"`
-			}
-			return node.atom.value
-		case queryNotExpr:
-			return "NOT " + render(node.left)
-		case queryAndExpr:
-			return "(" + render(node.left) + " AND " + render(node.right) + ")"
-		case queryOrExpr:
-			return "(" + render(node.left) + " OR " + render(node.right) + ")"
-		default:
-			return ""
-		}
-	}
-	parts := make([]string, 0, len(filters.tools)+len(filters.cwds)+len(filters.afters)+1)
-	for _, value := range filters.tools {
-		parts = append(parts, "tool:"+value)
-	}
-	for _, value := range filters.cwds {
-		parts = append(parts, "cwd:"+value)
-	}
-	for _, value := range filters.afters {
-		parts = append(parts, "after:"+value)
-	}
-	if value := render(expr); value != "" {
-		parts = append(parts, value)
-	}
-	return strings.Join(parts, " "), nil
 }
