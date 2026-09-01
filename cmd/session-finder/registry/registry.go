@@ -11,12 +11,7 @@ import (
 // Handler executes a subcommand's argv and returns a user-facing error.
 type Handler func([]string) error
 
-type commandSpec struct {
-	name string
-	run  Handler
-}
-
-var commands = map[string]commandSpec{}
+var commands = map[string]Handler{}
 
 // Register adds one subcommand. Duplicate names and invalid handlers panic at
 // initialization time rather than silently shadowing an existing command.
@@ -31,7 +26,7 @@ func Register(name string, run Handler) {
 	if _, exists := commands[name]; exists {
 		panic("session-finder: duplicate command " + name)
 	}
-	commands[name] = commandSpec{name: name, run: run}
+	commands[name] = run
 }
 
 // Names returns registered command names in stable display order.
@@ -46,11 +41,8 @@ func Names() []string {
 
 // Lookup returns a registered command handler.
 func Lookup(name string) (Handler, bool) {
-	spec, ok := commands[name]
-	if !ok {
-		return nil, false
-	}
-	return spec.run, true
+	handler, ok := commands[name]
+	return handler, ok
 }
 
 // Run invokes a registered command, reporting whether it was found.

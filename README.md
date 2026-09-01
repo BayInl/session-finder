@@ -119,9 +119,9 @@ The installer updates these user-level locations:
   with a `SessionEnd` command hook.
 - Kimi Code: `~/.kimi-code/config.toml` (or
   `$KIMI_CODE_HOME/config.toml`) with a `[[hooks]]` `SessionEnd` entry.
-- OpenCode: `~/.config/opencode/plugins/session-finder.ts` (or
-  `$XDG_CONFIG_HOME/opencode/plugins/session-finder.ts`) with a `session.idle`
-  plugin.
+- OpenCode: `$OPENCODE_CONFIG_DIR/plugins/session-finder.ts`, otherwise
+  `$XDG_CONFIG_HOME/opencode/plugins/session-finder.ts` (defaulting to
+  `~/.config/opencode/plugins/session-finder.ts`), with a `session.idle` plugin.
 
 The generated hooks are intentionally fail-open and detached from the host
 process. They ignore lifecycle JSON because the compensation scan discovers
@@ -159,10 +159,10 @@ options considered, the chosen one, and the rationale — with every record
 backed by an exact quote from the original transcript.
 
 ```sh
-sfind decisions extract              # scan sessions for decision candidates
-sfind decisions list                 # review queue
+sfind decisions extract                                      # scan sessions for decision candidates
+sfind decisions list                                         # review queue
 sfind decisions list --json
-sfind decisions review               # approve / reject / defer / edit each candidate
+sfind decisions review --id DECISION_ID --action approve     # approve / reject / defer / edit a candidate
 ```
 
 Nothing is recorded until you approve it: candidates start as drafts, every
@@ -175,9 +175,9 @@ Successful sessions can be distilled into reusable skills following the
 [Agent Skills](https://agentskills.io/) open format:
 
 ```sh
-sfind skill extract --pending        # scan new sessions for skill candidates
-sfind skill review                   # approve / reject / defer / edit / split evidence blocks
-sfind skill publish                  # write approved skills to ~/.agents/skills
+sfind skill extract --pending                         # scan new sessions for skill candidates
+sfind skill review CANDIDATE_ID --action approve      # approve / reject / defer / edit / split evidence blocks
+sfind skill publish CANDIDATE_ID                      # write an approved skill to ~/.agents/skills
 sfind skill list
 ```
 

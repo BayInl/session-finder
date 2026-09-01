@@ -6,23 +6,13 @@ import (
 	_ "github.com/BayInl/session-finder/internal/skill"
 )
 
-// commandHandler is kept as an alias for existing main-package tests. New
-// feature packages should import cmd/session-finder/registry directly.
-type commandHandler = commandregistry.Handler
-
-// RegisterCommand forwards registration to the importable command registry.
-func RegisterCommand(name string, run commandHandler) { commandregistry.Register(name, run) }
-
-// Commands returns registered command names in stable display order.
-func Commands() []string { return commandregistry.Names() }
-
 func init() {
-	RegisterCommand("hooks", runHooks)
-	RegisterCommand("index", runIndex)
-	RegisterCommand("search", runSearch)
-	RegisterCommand("show", runShow)
-	RegisterCommand("tui", runTUI)
-	RegisterCommand("version", runVersion)
+	commandregistry.Register("hooks", runHooks)
+	commandregistry.Register("index", runIndex)
+	commandregistry.Register("search", runSearch)
+	commandregistry.Register("show", runShow)
+	commandregistry.Register("tui", runTUI)
+	commandregistry.Register("version", runVersion)
 	decisions.RegisterCommand()
 }
 

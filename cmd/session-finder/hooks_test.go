@@ -375,7 +375,7 @@ func TestUpdateJSONFileRejectsNonObject(t *testing.T) {
 	if err := os.WriteFile(path, []byte("[]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := updateJSONFile(path, func(map[string]any) (bool, error) { return true, nil })
+	err := updateJSONFile(path, func(map[string]any) (bool, error) { return true, nil })
 	if err == nil || !strings.Contains(err.Error(), "top-level JSON value must be an object") {
 		t.Fatalf("updateJSONFile() error = %v", err)
 	}

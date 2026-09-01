@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/jedib0t/go-pretty/v6 v6.8.3
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	modernc.org/sqlite v1.36.1
 )
@@ -34,7 +35,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
