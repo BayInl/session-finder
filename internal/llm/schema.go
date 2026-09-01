@@ -32,7 +32,7 @@ func ValidateJSONSchema(data, schema json.RawMessage) error {
 	if !ok || schemaObject == nil {
 		return fmt.Errorf("%w: schema must be an object", ErrSchemaViolation)
 	}
-	if err := validateSchemaValue(value, schemaObject, "$", true); err != nil {
+	if err := validateSchemaValue(value, schemaObject, "$"); err != nil {
 		return fmt.Errorf("%w: %v", ErrSchemaViolation, err)
 	}
 	return nil
@@ -57,7 +57,7 @@ func decodeSingleJSON(data []byte, output *any) error {
 	return nil
 }
 
-func validateSchemaValue(value any, schema map[string]any, path string, root bool) error {
+func validateSchemaValue(value any, schema map[string]any, path string) error {
 	if schema == nil {
 		return fmt.Errorf("%s: schema must be an object", path)
 	}
@@ -140,7 +140,7 @@ func validateSchemaValue(value any, schema map[string]any, path string, root boo
 		for key, item := range object {
 			propertySchema, declared := properties[key]
 			if declared {
-				if err := validateSchemaValue(item, propertySchema, path+"."+key, false); err != nil {
+				if err := validateSchemaValue(item, propertySchema, path+"."+key); err != nil {
 					return err
 				}
 				continue
@@ -154,7 +154,7 @@ func validateSchemaValue(value any, schema map[string]any, path string, root boo
 					return fmt.Errorf("%s: unknown field %q", path, key)
 				}
 			case map[string]any:
-				if err := validateSchemaValue(item, setting, path+"."+key, false); err != nil {
+				if err := validateSchemaValue(item, setting, path+"."+key); err != nil {
 					return err
 				}
 			default:
@@ -175,15 +175,9 @@ func validateSchemaValue(value any, schema map[string]any, path string, root boo
 			return fmt.Errorf("%s: items must be an object", path)
 		}
 		for index, item := range array {
-			if err := validateSchemaValue(item, items, fmt.Sprintf("%s[%d]", path, index), false); err != nil {
+			if err := validateSchemaValue(item, items, fmt.Sprintf("%s[%d]", path, index)); err != nil {
 				return err
 			}
-		}
-	}
-	if root {
-		if _, exists := schema["additionalProperties"]; !exists {
-			// Omitted additionalProperties intentionally retains JSON Schema's
-			// permissive default; strict callers set it to false explicitly.
 		}
 	}
 	return nil

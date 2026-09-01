@@ -1,12 +1,10 @@
 package skill
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/BayInl/session-finder/internal/extract"
@@ -58,17 +56,9 @@ type CandidateReview struct {
 	Messages  []JudgeMessage    `json:"messages"`
 }
 
-type CandidateJudgment struct {
-	Disposition string   `json:"disposition"`
-	Confidence  float64  `json:"confidence"`
-	ReasonCodes []string `json:"reason_codes"`
-	OneOffRisk  float64  `json:"one_off_risk"`
-	SecretRisk  float64  `json:"secret_risk"`
-}
+type CandidateJudgment = llm.RiskJudgeResponse
 
-func CandidateJudgeSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","additionalProperties":false,"required":["disposition","confidence","reason_codes","one_off_risk","secret_risk"],"properties":{"disposition":{"type":"string","enum":["draft","review","suppress"]},"confidence":{"type":"number","minimum":0,"maximum":1},"reason_codes":{"type":"array","items":{"type":"string"}},"one_off_risk":{"type":"number","minimum":0,"maximum":1},"secret_risk":{"type":"number","minimum":0,"maximum":1}}}`)
-}
+func CandidateJudgeSchema() json.RawMessage { return llm.RiskJudgeResponseSchema() }
 
 func NewLLMCandidateJudge(client llm.Client) CandidateJudge {
 	return &llmCandidateJudge{client: client}
@@ -103,40 +93,9 @@ func (j *llmCandidateJudge) Judge(ctx context.Context, review CandidateReview) (
 }
 
 func decodeCandidateJudgment(data []byte) (CandidateJudgment, error) {
-	if err := llm.ValidateJSONSchema(data, CandidateJudgeSchema()); err != nil {
+	judgment, err := llm.DecodeRiskJudgeResponse(data)
+	if err != nil {
 		return CandidateJudgment{}, fmt.Errorf("skill candidate judge schema violation: %w", err)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var judgment CandidateJudgment
-	if err := decoder.Decode(&judgment); err != nil {
-		return CandidateJudgment{}, fmt.Errorf("skill candidate judge schema violation: %v", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return CandidateJudgment{}, errors.New("skill candidate judge schema violation: trailing JSON")
-		}
-		return CandidateJudgment{}, fmt.Errorf("skill candidate judge schema violation: trailing JSON: %v", err)
-	}
-	judgment.Disposition = strings.ToLower(strings.TrimSpace(judgment.Disposition))
-	if judgment.Disposition != QualityDraft && judgment.Disposition != "review" && judgment.Disposition != QualitySuppress {
-		return CandidateJudgment{}, fmt.Errorf("skill candidate judge schema violation: invalid disposition %q", judgment.Disposition)
-	}
-	if judgment.Confidence < 0 || judgment.Confidence > 1 || judgment.OneOffRisk < 0 || judgment.OneOffRisk > 1 || judgment.SecretRisk < 0 || judgment.SecretRisk > 1 {
-		return CandidateJudgment{}, errors.New("skill candidate judge schema violation: numeric values must be between 0 and 1")
-	}
-	if judgment.ReasonCodes == nil {
-		return CandidateJudgment{}, errors.New("skill candidate judge schema violation: reason_codes must be an array")
-	}
-	if len(judgment.ReasonCodes) > 32 {
-		return CandidateJudgment{}, errors.New("skill candidate judge schema violation: too many reason_codes")
-	}
-	for index, reason := range judgment.ReasonCodes {
-		judgment.ReasonCodes[index] = strings.TrimSpace(reason)
-		if judgment.ReasonCodes[index] == "" || len([]rune(judgment.ReasonCodes[index])) > 80 {
-			return CandidateJudgment{}, errors.New("skill candidate judge schema violation: invalid reason_codes item")
-		}
 	}
 	return judgment, nil
 }
@@ -167,23 +126,20 @@ func boundCandidateReview(review CandidateReview) CandidateReview {
 }
 
 func candidateReview(messages []record.MessageRecord, bundle CandidateBundle) CandidateReview {
-	start := 0
-	if len(messages) > SkillJudgeWindowRadius {
-		start = 0
-	}
 	end := len(messages)
 	if end > 2*SkillJudgeWindowRadius+1 {
 		end = 2*SkillJudgeWindowRadius + 1
 	}
-	window := make([]JudgeMessage, 0, end-start)
-	for index := start; index < end; index++ {
+	window := make([]JudgeMessage, 0, end)
+	for index := 0; index < end; index++ {
 		window = append(window, JudgeMessage{Index: index + 1, Role: messages[index].Role, Content: messages[index].Text})
 	}
+	signals := bundle.Quality.Signals
 	return boundCandidateReview(CandidateReview{Candidate: CandidateSnapshot{
 		Slug: bundle.Slug, Trigger: bundle.Trigger, Instructions: bundle.Instructions,
 		QualityDisposition: bundle.Quality.Disposition, Score: bundle.Quality.Score,
-		Confidence: bundle.Quality.Confidence, SuccessEvidence: bundle.Quality.SuccessEvidence,
-		OneOffRisk: bundle.Quality.OneOffRisk, SecretRisk: bundle.Quality.SecretRisk,
+		Confidence: signals.Confidence, SuccessEvidence: signals.SuccessEvidence,
+		OneOffRisk: signals.OneOffRisk, SecretRisk: signals.SecretRisk,
 	}, Messages: window})
 }
 
@@ -219,30 +175,24 @@ func applyCandidateJudgment(bundle CandidateBundle, judgment CandidateJudgment) 
 			bundle.Quality.Score = 0
 			bundle.Quality.Reasons = appendSkillReason(bundle.Quality.Reasons, "llm:review-missing-fields")
 			action = extract.ActionReview
-		} else if judgment.Confidence > bundle.Quality.Confidence && bundle.Quality.Disposition != QualitySuppress {
-			bundle.Quality.Confidence = judgment.Confidence
+		} else if judgment.Confidence > bundle.Quality.Signals.Confidence && bundle.Quality.Disposition != QualitySuppress {
+			bundle.Quality.Signals.Confidence = judgment.Confidence
 			if judgment.Confidence > bundle.Quality.Score {
 				bundle.Quality.Score = judgment.Confidence
 			}
 		}
 	}
-	if judgment.OneOffRisk > bundle.Quality.OneOffRisk {
-		bundle.Quality.OneOffRisk = judgment.OneOffRisk
+	if judgment.OneOffRisk > bundle.Quality.Signals.OneOffRisk {
 		bundle.Quality.Signals.OneOffRisk = judgment.OneOffRisk
 	}
-	if judgment.SecretRisk > bundle.Quality.SecretRisk {
-		bundle.Quality.SecretRisk = judgment.SecretRisk
+	if judgment.SecretRisk > bundle.Quality.Signals.SecretRisk {
 		bundle.Quality.Signals.SecretRisk = judgment.SecretRisk
 	}
-	if bundle.Quality.OneOffRisk >= HighOneOffRisk || bundle.Quality.SecretRisk >= HighSecretRisk || len(bundle.Quality.SuccessEvidence) < MinimumSuccessEvidence {
+	if bundle.Quality.Signals.OneOffRisk >= HighOneOffRisk || bundle.Quality.Signals.SecretRisk >= HighSecretRisk || len(bundle.Quality.Signals.SuccessEvidence) < MinimumSuccessEvidence {
 		bundle.Quality.Disposition = QualitySuppress
 		bundle.Quality.Score = 0
 		action = extract.ActionSuppress
 	}
-	bundle.Quality.Signals.Confidence = bundle.Quality.Confidence
-	bundle.Quality.Signals.OneOffRisk = bundle.Quality.OneOffRisk
-	bundle.Quality.Signals.SecretRisk = bundle.Quality.SecretRisk
-	bundle.Quality.RecommendedAction = action
 	bundle.Quality.Signals.RecommendedAction = action
 	return normalizeBundle(bundle)
 }

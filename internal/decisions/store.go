@@ -26,9 +26,6 @@ type Store struct {
 	path       string
 }
 
-// DecisionStore is a compatibility alias for callers using the domain name.
-type DecisionStore = Store
-
 // CreateInput is the explicit confirmation boundary for durable writes.
 type CreateInput struct {
 	Decision  Decision
@@ -37,9 +34,6 @@ type CreateInput struct {
 	Actor     string
 	Reason    string
 }
-
-// Input is a concise alias for CreateInput.
-type Input = CreateInput
 
 // ReviewAction is one Git-style action available to a reviewer.
 type ReviewAction string
@@ -80,10 +74,6 @@ func Open(path string) (*Store, error) {
 	return &Store{candidates: candidateStore, path: candidateStore.Path()}, nil
 }
 
-func OpenStore(path string) (*Store, error)        { return Open(path) }
-func NewStore(path string) (*Store, error)         { return Open(path) }
-func NewDecisionStore(path string) (*Store, error) { return Open(path) }
-
 // Close closes the underlying candidate store.
 func (s *Store) Close() error {
 	if s == nil || s.candidates == nil {
@@ -98,15 +88,6 @@ func (s *Store) Path() string {
 		return ""
 	}
 	return s.path
-}
-
-// CandidateStore exposes the shared state-machine store for integrations that
-// need to inspect generic candidate events.
-func (s *Store) CandidateStore() *extract.Store {
-	if s == nil {
-		return nil
-	}
-	return s.candidates
 }
 
 // Create writes a confirmed decision as a detected extraction candidate.
@@ -223,14 +204,78 @@ func (s *Store) Get(ctx context.Context, id string) (Decision, error) {
 	if candidate.Kind != KindDecision {
 		return Decision{}, fmt.Errorf("candidate %q is not a decision", id)
 	}
+	superseded := map[string]struct{}{}
+	if candidate.Status == extract.StatusDeleted {
+		isSuperseded, err := s.candidates.IsSuperseded(ctx, KindDecision, candidate.ID)
+		if err != nil {
+			return Decision{}, err
+		}
+		if isSuperseded {
+			superseded[candidate.ID] = struct{}{}
+		}
+	}
+	return hydrateCandidateDecision(candidate, superseded)
+}
+
+// List returns durable decisions in the shared store's stable order.
+func (s *Store) List(ctx context.Context, options ListOptions) ([]Decision, error) {
+	if s == nil || s.candidates == nil {
+		return nil, errors.New("nil decision store")
+	}
+	candidateOptions := extract.ListOptions{SessionID: options.SessionID, Kind: KindDecision, IncludeDeleted: options.IncludeDeleted, Limit: options.Limit}
+	if options.Status != "" {
+		if options.Status == StatusSuperseded {
+			candidateOptions.Status = extract.StatusDeleted
+			candidateOptions.IncludeDeleted = true
+			candidateOptions.Limit = 0
+		} else {
+			candidateOptions.Status = CandidateStatusForDecision(options.Status)
+		}
+	}
+	candidates, err := s.candidates.List(ctx, candidateOptions)
+	if err != nil {
+		return nil, err
+	}
+	superseded := map[string]struct{}{}
+	if options.IncludeDeleted || options.Status == StatusSuperseded {
+		superseded, err = s.candidates.SupersededIDs(ctx, KindDecision)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := make([]Decision, 0, len(candidates))
+	for _, candidate := range candidates {
+		if options.Status == StatusSuperseded {
+			if _, ok := superseded[candidate.ID]; !ok {
+				continue
+			}
+		}
+		decision, err := hydrateCandidateDecision(candidate, superseded)
+		if err != nil {
+			return nil, fmt.Errorf("decode decision %s: %w", candidate.ID, err)
+		}
+		if options.Status != "" && decision.Status != options.Status {
+			continue
+		}
+		result = append(result, decision)
+		if options.Limit > 0 && len(result) >= options.Limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+func hydrateCandidateDecision(candidate extract.Candidate, superseded map[string]struct{}) (Decision, error) {
 	decision, err := DecodeDecision(candidate.Payload)
 	if err != nil {
 		return Decision{}, err
 	}
 	decision.ID = candidate.ID
 	decision.Status = StatusForCandidate(candidate.Status)
-	if candidate.Status == extract.StatusDeleted && decision.Supersedes != "" {
-		decision.Status = StatusSuperseded
+	if candidate.Status == extract.StatusDeleted {
+		if _, ok := superseded[candidate.ID]; ok {
+			decision.Status = StatusSuperseded
+		}
 	}
 	if decision.Provenance.SessionID == "" {
 		decision.Provenance.SessionID = candidate.SessionID
@@ -246,50 +291,6 @@ func (s *Store) Get(ctx context.Context, id string) (Decision, error) {
 	}
 	decision.UpdatedAt = candidate.UpdatedAt
 	return decision, nil
-}
-
-func (s *Store) GetDecision(ctx context.Context, id string) (Decision, error) { return s.Get(ctx, id) }
-
-// List returns durable decisions in the shared store's stable order.
-func (s *Store) List(ctx context.Context, options ListOptions) ([]Decision, error) {
-	if s == nil || s.candidates == nil {
-		return nil, errors.New("nil decision store")
-	}
-	candidateOptions := extract.ListOptions{SessionID: options.SessionID, Kind: KindDecision, IncludeDeleted: options.IncludeDeleted, Limit: options.Limit}
-	if options.Status != "" {
-		if options.Status == StatusSuperseded {
-			candidateOptions.Status = extract.StatusDeleted
-			candidateOptions.IncludeDeleted = true
-		} else {
-			candidateOptions.Status = CandidateStatusForDecision(options.Status)
-		}
-	}
-	candidates, err := s.candidates.List(ctx, candidateOptions)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]Decision, 0, len(candidates))
-	for _, candidate := range candidates {
-		decision, err := DecodeDecision(candidate.Payload)
-		if err != nil {
-			return nil, fmt.Errorf("decode decision %s: %w", candidate.ID, err)
-		}
-		decision.ID = candidate.ID
-		decision.Status = StatusForCandidate(candidate.Status)
-		if candidate.Status == extract.StatusDeleted && decision.Supersedes != "" {
-			decision.Status = StatusSuperseded
-		}
-		if options.Status != "" && decision.Status != options.Status {
-			continue
-		}
-		decision.UpdatedAt = candidate.UpdatedAt
-		result = append(result, decision)
-	}
-	return result, nil
-}
-
-func (s *Store) ListDecisions(ctx context.Context, options ListOptions) ([]Decision, error) {
-	return s.List(ctx, options)
 }
 
 // Events returns the append-only generic candidate audit trail.
@@ -353,21 +354,36 @@ func (s *Store) Review(ctx context.Context, input ReviewInput) (Decision, error)
 		if edited.Provenance.SessionID == "" {
 			edited.Provenance = old.Provenance
 		}
-		if edited.Supersedes == "" {
-			edited.Supersedes = old.ID
-		}
+		edited.Supersedes = old.ID
 		messages, err := s.reviewMessages(ctx, old, input.Messages)
 		if err != nil {
 			return Decision{}, err
 		}
-		created, err := s.Create(ctx, CreateInput{Decision: edited, Messages: messages, Confirmed: true, Actor: actor, Reason: "edit: " + reason})
+		edited, err = prepareDecision(edited, messages)
 		if err != nil {
 			return Decision{}, err
 		}
-		if _, err := s.candidates.Delete(ctx, old.ID, actor, "replaced by edit "+created.ID); err != nil {
+		payload, err := MarshalDecision(edited)
+		if err != nil {
 			return Decision{}, err
 		}
-		return created, nil
+		quotes := make([]string, 0, len(edited.Evidence))
+		for _, evidence := range edited.Evidence {
+			quotes = append(quotes, evidence.Quote)
+		}
+		candidate, err := s.candidates.Replace(ctx, old.ID, extract.CandidateInput{
+			ID: edited.ID, SessionID: edited.Provenance.SessionID, Tool: edited.Provenance.Tool,
+			SourcePath: edited.Provenance.SourcePath, Kind: KindDecision, Title: edited.Chosen,
+			Summary: edited.Context, Payload: payload, Status: extract.StatusDetected,
+			Actor: actor, Reason: "edit: " + reason, Confidence: edited.Confidence,
+			SuccessEvidence: quotes, RecommendedAction: extract.ActionReview,
+		}, actor, "replaced by edit "+edited.ID)
+		if err != nil {
+			return Decision{}, err
+		}
+		edited.ID = candidate.ID
+		edited.Status = StatusProposed
+		return edited, nil
 	default:
 		return Decision{}, fmt.Errorf("%w: %q", ErrInvalidReviewAction, input.Action)
 	}

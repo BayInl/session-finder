@@ -58,7 +58,6 @@ var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 type EvidenceBlock struct {
 	ID           string `json:"id"`
 	Kind         string `json:"kind"`
-	Type         string `json:"type,omitempty"`
 	SessionID    string `json:"session_id"`
 	MessageIndex int    `json:"message_index"`
 	Role         string `json:"role"`
@@ -70,23 +69,17 @@ type EvidenceBlock struct {
 }
 
 // QualityReport is the deterministic quality-gate result. A suppress result
-// is still returned to explain why a candidate was not publishable. The signal
-// fields are flattened for the candidate contract; Signals is retained as the
-// complete extract-engine payload for callers that need it.
+// is still returned to explain why a candidate was not publishable. Signals is
+// the single source of truth for confidence, evidence, risks, and recommendation.
 type QualityReport struct {
-	Disposition       string               `json:"disposition"`
-	Score             float64              `json:"score"`
-	Reasons           []string             `json:"reasons"`
-	SuccessEvidence   []string             `json:"success_evidence,omitempty"`
-	OneOffRisk        float64              `json:"one_off_risk,omitempty"`
-	SecretRisk        float64              `json:"secret_risk,omitempty"`
-	Confidence        float64              `json:"confidence,omitempty"`
-	RecommendedAction string               `json:"recommended_action,omitempty"`
-	Signals           extract.SignalBundle `json:"signals"`
+	Disposition string               `json:"disposition"`
+	Score       float64              `json:"score"`
+	Reasons     []string             `json:"reasons"`
+	Signals     extract.SignalBundle `json:"signals"`
 }
 
 // CandidateBundle is the review/publish contract for one proposed skill.
-// Evidence, risks, and conflicts are local review metadata. RenderSkillMarkdown
+// Evidence and risks are local review metadata. RenderSkillMarkdown
 // intentionally consumes only Slug, Trigger, and Instructions.
 type CandidateBundle struct {
 	Slug         string          `json:"slug"`
@@ -95,18 +88,12 @@ type CandidateBundle struct {
 	Evidence     []EvidenceBlock `json:"evidence"`
 	Quality      QualityReport   `json:"quality"`
 	Risks        []string        `json:"risks"`
-	Conflicts    []string        `json:"conflicts"`
 	SessionID    string          `json:"session_id,omitempty"`
 	Tool         string          `json:"tool,omitempty"`
 	Title        string          `json:"title,omitempty"`
 	CWD          string          `json:"cwd,omitempty"`
 	SourcePath   string          `json:"source_path,omitempty"`
 }
-
-// Bundle and SkillCandidate are readable aliases retained for callers using
-// the terminology from the design reports.
-type Bundle = CandidateBundle
-type SkillCandidate = CandidateBundle
 
 // ExtractOptions controls transcript extraction, optional candidate review, and
 // candidate persistence. Judge is deliberately separate from the shared
@@ -120,7 +107,6 @@ type ExtractOptions struct {
 	CandidateDBPath string
 	Actor           string
 	Judge           CandidateJudge
-	JudgeLimit      int
 }
 
 // ReviewRequest describes a human review operation. EvidenceID is optional for
@@ -210,7 +196,6 @@ func normalizeBundle(bundle CandidateBundle) CandidateBundle {
 	bundle.Evidence = append([]EvidenceBlock(nil), bundle.Evidence...)
 	bundle.Quality.Reasons = normalizeStringList(bundle.Quality.Reasons)
 	bundle.Risks = normalizeStringList(bundle.Risks)
-	bundle.Conflicts = normalizeStringList(bundle.Conflicts)
 	return bundle
 }
 
@@ -225,7 +210,7 @@ func BundleFromCandidate(candidate extract.Candidate) (CandidateBundle, error) {
 	if len(candidate.Payload) == 0 {
 		return bundle, errors.New("candidate payload is empty")
 	}
-	if err := jsonUnmarshal(candidate.Payload, &bundle); err != nil {
+	if err := json.Unmarshal(candidate.Payload, &bundle); err != nil {
 		return bundle, err
 	}
 	return normalizeBundle(bundle), nil
@@ -242,5 +227,4 @@ func messageSummary(message record.MessageRecord, max int) string {
 }
 
 // Keep JSON behavior in one place so callers get deterministic encoding.
-func jsonMarshal(value any) ([]byte, error)      { return json.Marshal(value) }
-func jsonUnmarshal(data []byte, value any) error { return json.Unmarshal(data, value) }
+func jsonMarshal(value any) ([]byte, error) { return json.Marshal(value) }

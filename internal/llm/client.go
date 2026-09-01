@@ -52,14 +52,10 @@ type Message struct {
 // redacts every message before serialization and wraps it as data, not prompt
 // instructions. Schema is optional and defaults to SignalSchema.
 type CompletionRequest struct {
-	Transcript []Message         `json:"transcript"`
-	Prompt     string            `json:"prompt,omitempty"`
-	Schema     json.RawMessage   `json:"schema,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	Transcript []Message       `json:"transcript"`
+	Prompt     string          `json:"prompt,omitempty"`
+	Schema     json.RawMessage `json:"schema,omitempty"`
 }
-
-// Request is a concise alias for CompletionRequest.
-type Request = CompletionRequest
 
 // CompletionResponse is always JSON validated before it is returned.
 type CompletionResponse struct {
@@ -68,18 +64,10 @@ type CompletionResponse struct {
 	JSON     json.RawMessage `json:"json"`
 }
 
-// Response is a concise alias for CompletionResponse.
-type Response = CompletionResponse
-
 // Client is the pluggable provider interface. Complete must return a
 // schema-valid JSON object or an error; it never returns an untrusted raw body.
 type Client interface {
 	Complete(context.Context, CompletionRequest) (CompletionResponse, error)
-}
-
-// SignalClient provides typed signal analysis on top of Client.
-type SignalClient interface {
-	Analyze(context.Context, []record.MessageRecord) (extract.SignalBundle, error)
 }
 
 // New constructs a client. Offline is used for an empty provider; only
@@ -98,9 +86,6 @@ func New(config Config) (Client, error) {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidProvider, config.Provider)
 	}
 }
-
-// NewClient is an explicit constructor alias.
-func NewClient(config Config) (Client, error) { return New(config) }
 
 // NewFromEnv selects the provider from environment. It remains offline unless
 // SESSION_FINDER_LLM_PROVIDER/LLM_PROVIDER is set to openai, or the complete
@@ -129,32 +114,6 @@ func Default() Client {
 	return client
 }
 
-// Analyze uses the environment-selected client to produce typed signals.
-func Analyze(ctx context.Context, messages []record.MessageRecord) (extract.SignalBundle, error) {
-	return NewSignalClient(Default()).Analyze(ctx, messages)
-}
-
-// NewSignalClient adapts a generic client to typed signal output.
-func NewSignalClient(client Client) SignalClient { return signalClient{client: client} }
-
-type signalClient struct{ client Client }
-
-func (s signalClient) Analyze(ctx context.Context, messages []record.MessageRecord) (extract.SignalBundle, error) {
-	transcript := make([]Message, 0, len(messages))
-	for _, message := range messages {
-		transcript = append(transcript, Message{Role: message.Role, Content: message.Text})
-	}
-	response, err := s.client.Complete(ctx, CompletionRequest{Transcript: transcript})
-	if err != nil {
-		return extract.SignalBundle{}, err
-	}
-	var bundle extract.SignalBundle
-	if err := decodeSignal(response.JSON, &bundle); err != nil {
-		return extract.SignalBundle{}, err
-	}
-	return bundle, nil
-}
-
 // OfflineClient performs pure local rule analysis. It cannot make network
 // calls and is the default provider.
 type OfflineClient struct{}
@@ -177,11 +136,6 @@ func (c *OfflineClient) Complete(_ context.Context, request CompletionRequest) (
 		return CompletionResponse{}, err
 	}
 	return CompletionResponse{Provider: ProviderOffline, JSON: data}, nil
-}
-
-// Analyze provides the typed offline convenience method.
-func (c *OfflineClient) Analyze(_ context.Context, messages []record.MessageRecord) (extract.SignalBundle, error) {
-	return extract.Analyze(messages), nil
 }
 
 type openAIClient struct {
@@ -459,8 +413,8 @@ func firstEnv(names ...string) string {
 	return ""
 }
 
-// RedactRequest returns a deep-copied request with transcript, prompt, and
-// metadata values redacted before they can be serialized or sent externally.
+// RedactRequest returns a deep-copied request with transcript and prompt values
+// redacted before they can be serialized or sent externally.
 func RedactRequest(request CompletionRequest) CompletionRequest {
 	result := request
 	result.Transcript = make([]Message, len(request.Transcript))
@@ -468,12 +422,6 @@ func RedactRequest(request CompletionRequest) CompletionRequest {
 		result.Transcript[i] = Message{Role: Redact(message.Role), Content: Redact(message.Content)}
 	}
 	result.Prompt = Redact(request.Prompt)
-	if request.Metadata != nil {
-		result.Metadata = make(map[string]string, len(request.Metadata))
-		for key, value := range request.Metadata {
-			result.Metadata[Redact(key)] = Redact(value)
-		}
-	}
 	if len(request.Schema) > 0 {
 		result.Schema = append(json.RawMessage(nil), request.Schema...)
 	}
@@ -518,9 +466,6 @@ func Redact(text string) string {
 	text = redactWinPathRE.ReplaceAllString(text, "[REDACTED_PATH]")
 	return text
 }
-
-// RedactText is an explicit alias for Redact.
-func RedactText(text string) string { return Redact(text) }
 
 // RedactTranscript redacts a transcript while preserving roles.
 func RedactTranscript(messages []Message) []Message {

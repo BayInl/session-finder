@@ -24,7 +24,7 @@ func TestQualityGateSuppressesMissingEvidenceAndOneOff(t *testing.T) {
 		"secret":           {Confidence: 0.9, SuccessEvidence: []string{"acceptance"}, SecretRisk: 0.8},
 	} {
 		t.Run(name, func(t *testing.T) {
-			report := QualityGate(signals)
+			report := EvaluateQuality(signals)
 			if report.Disposition != QualitySuppress || len(report.Reasons) == 0 {
 				t.Fatalf("report = %+v, want suppression with reason", report)
 			}
@@ -385,7 +385,7 @@ func TestBuildCandidateJudgeRunsForLowConfidenceCandidates(t *testing.T) {
 	if calls != 1 || seen.Candidate.Slug == "" || len(seen.Messages) == 0 {
 		t.Fatalf("judge calls/review = %d/%#v", calls, seen)
 	}
-	if bundle.Quality.Confidence != 0.91 || bundle.Quality.Signals.Confidence != 0.91 || bundle.Quality.RecommendedAction != extract.ActionDraft || bundle.Quality.Signals.RecommendedAction != extract.ActionDraft {
+	if bundle.Quality.Signals.Confidence != 0.91 || bundle.Quality.Signals.RecommendedAction != extract.ActionDraft {
 		t.Fatalf("judge metadata = %+v", bundle.Quality)
 	}
 	if !skillTestContains(bundle.Quality.Reasons, "llm:reusable") {
@@ -431,21 +431,17 @@ func TestBuildCandidateHardSuppressionsSkipJudge(t *testing.T) {
 
 func TestApplyCandidateJudgmentOnlyRaisesRisksAndSynchronizesMetadata(t *testing.T) {
 	bundle := publishableBundle()
-	bundle.Quality.Confidence = 0.7
 	bundle.Quality.Score = 0.72
-	bundle.Quality.OneOffRisk = 0.2
-	bundle.Quality.SecretRisk = 0.1
-	bundle.Quality.RecommendedAction = extract.ActionDraft
 	bundle.Quality.Signals = extract.SignalBundle{Confidence: 0.7, SuccessEvidence: []string{extract.EvidenceTestsPassed}, OneOffRisk: 0.2, SecretRisk: 0.1, RecommendedAction: extract.ActionDraft}
 	got := applyCandidateJudgment(bundle, CandidateJudgment{Disposition: "review", Confidence: 0.99, OneOffRisk: 0.8, SecretRisk: 0.7, ReasonCodes: []string{"ambiguous"}})
-	if got.Quality.OneOffRisk != 0.8 || got.Quality.SecretRisk != 0.7 || got.Quality.Signals.OneOffRisk != 0.8 || got.Quality.Signals.SecretRisk != 0.7 {
+	if got.Quality.Signals.OneOffRisk != 0.8 || got.Quality.Signals.SecretRisk != 0.7 {
 		t.Fatalf("risks not synchronized: %+v", got.Quality)
 	}
-	if got.Quality.Confidence != 0.7 || got.Quality.Score != 0 || got.Quality.RecommendedAction != extract.ActionSuppress || got.Quality.Signals.RecommendedAction != extract.ActionSuppress || got.Quality.Disposition != QualitySuppress {
+	if got.Quality.Signals.Confidence != 0.7 || got.Quality.Score != 0 || got.Quality.Signals.RecommendedAction != extract.ActionSuppress || got.Quality.Disposition != QualitySuppress {
 		t.Fatalf("review metadata = %+v", got.Quality)
 	}
 	lower := applyCandidateJudgment(bundle, CandidateJudgment{Disposition: QualityDraft, Confidence: 0.1, OneOffRisk: 0.01, SecretRisk: 0.02})
-	if lower.Quality.Confidence != 0.7 || lower.Quality.OneOffRisk != 0.2 || lower.Quality.SecretRisk != 0.1 {
+	if lower.Quality.Signals.Confidence != 0.7 || lower.Quality.Signals.OneOffRisk != 0.2 || lower.Quality.Signals.SecretRisk != 0.1 {
 		t.Fatalf("judge lowered existing quality: %+v", lower.Quality)
 	}
 }

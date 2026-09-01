@@ -49,11 +49,6 @@ func RunCommand(argv []string) error {
 	}
 }
 
-// Commands returns the skill command family names.
-func Commands() []string {
-	return []string{"extract", "review", "publish", "disable", "delete", "list"}
-}
-
 func printSkillUsage() {
 	ui.PrintUsage(os.Stdout, brand.Usage("skill <extract|review|publish|disable|delete|list> [flags]"), "", nil, nil)
 }
@@ -69,11 +64,10 @@ func runExtract(argv []string) error {
 	candidateDB := set.String("candidate-db", "", "path to the candidate SQLite database")
 	actor := set.String("actor", defaultActor, "audit actor")
 	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
-	judgeLimit := set.Int("judge-limit", 0, "maximum candidate judge calls (0 means unlimited)")
 	asJSON := set.Bool("json", false, "emit JSON")
 	ui.AttachUsage(set, brand.Usage("skill extract [flags]"), "Extract skill candidates from sessions.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"session", "cwd", "after", "pending"}},
-		{Title: "Judge", Names: []string{"judge", "judge-limit"}},
+		{Title: "Judge", Names: []string{"judge"}},
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db", "candidate-db"}},
 	})
@@ -88,7 +82,7 @@ func runExtract(argv []string) error {
 		return err
 	}
 	options := ExtractOptions{SessionID: *session, CWD: *cwd, After: *after, Pending: *pending,
-		IndexDBPath: *indexDB, CandidateDBPath: *candidateDB, Actor: *actor, JudgeLimit: *judgeLimit}
+		IndexDBPath: *indexDB, CandidateDBPath: *candidateDB, Actor: *actor}
 	if mode != llm.JudgeOff {
 		client, clientErr := llm.NewFromEnv()
 		if clientErr != nil {

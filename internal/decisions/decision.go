@@ -17,7 +17,6 @@ import (
 
 const (
 	KindDecision = "decision"
-	DecisionKind = KindDecision
 
 	StatusProposed   = "proposed"
 	StatusAccepted   = "accepted"
@@ -117,9 +116,6 @@ type DecisionCandidate struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
-// Candidate is a compatibility alias for callers that use the generic term.
-type Candidate = DecisionCandidate
-
 func validDecisionStatus(status string) bool {
 	switch status {
 	case StatusProposed, StatusAccepted, StatusRejected, StatusDeferred, StatusSuperseded, StatusDraft:
@@ -206,9 +202,6 @@ func (d Decision) Validate() error {
 	}
 	if math.IsNaN(d.Confidence) || math.IsInf(d.Confidence, 0) || d.Confidence < 0 || d.Confidence > 1 {
 		return fmt.Errorf("%w: confidence must be between 0 and 1", ErrInvalidDecision)
-	}
-	if d.Outcome == OutcomeImplemented && !d.HasImplementationEvidence() {
-		return fmt.Errorf("%w: implemented outcome requires implementation evidence", ErrInvalidDecision)
 	}
 	if d.Status == StatusSuperseded && strings.TrimSpace(d.Supersedes) == "" {
 		return fmt.Errorf("%w: superseded decision requires supersedes", ErrInvalidDecision)
@@ -376,6 +369,3 @@ func EnsureOutcome(d Decision) Decision { return d.Normalize() }
 func Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false,"required":["kind","status","context","options","chosen","rationale","evidence","outcome","commits","confidence","provenance"],"properties":{"id":{"type":"string"},"kind":{"const":"decision"},"status":{"enum":["proposed","accepted","rejected","deferred","superseded","draft"]},"context":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"chosen":{"type":"string"},"rationale":{"type":"string"},"evidence":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["kind","quote"],"properties":{"kind":{"type":"string"},"quote":{"type":"string"},"message_index":{"type":"integer","minimum":0},"role":{"type":"string"},"source":{"type":"string"}}}},"outcome":{"enum":["unknown","planned","implemented","abandoned"]},"commits":{"type":"array","items":{"type":"object"}},"confidence":{"type":"number","minimum":0,"maximum":1},"provenance":{"type":"object"},"supersedes":{"type":"string"},"created_at":{"type":"string"},"updated_at":{"type":"string"}}}`)
 }
-
-// DecisionSchema is an explicit alias for Schema.
-func DecisionSchema() json.RawMessage { return Schema() }

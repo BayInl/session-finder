@@ -1,7 +1,6 @@
 package decisions
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -54,12 +53,15 @@ func FindCommits(ctx context.Context, runner GitRunner, query GitQuery) ([]Commi
 	if dir == "" {
 		dir = "."
 	}
-	args := []string{"log", "--all", "--no-merges", "--date-order", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI"}
+	args := []string{"log", "--all", "--no-merges", "--date-order", "--format=%x1e%H%x1f%h%x1f%s%x1f%an%x1f%aI", "--name-only", "--no-renames"}
 	if !query.After.IsZero() {
 		args = append(args, "--since="+query.After.UTC().Format(time.RFC3339))
 	}
 	if !query.Before.IsZero() {
 		args = append(args, "--until="+query.Before.UTC().Format(time.RFC3339))
+	}
+	if query.MaxCommits > 0 {
+		args = append(args, fmt.Sprintf("--max-count=%d", query.MaxCommits))
 	}
 	args = append(args, "--")
 	for _, path := range normalizePaths(query.Paths) {
@@ -69,15 +71,28 @@ func FindCommits(ctx context.Context, runner GitRunner, query GitQuery) ([]Commi
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrGitUnavailable, err)
 	}
-	rows := bytes.Split(data, []byte{'\n'})
-	result := make([]CommitRef, 0, len(rows))
-	for _, row := range rows {
-		fields := strings.Split(string(row), "\x1f")
-		if len(fields) < 5 || strings.TrimSpace(fields[0]) == "" {
+	chunks := bytes.Split(data, []byte{0x1e})
+	result := make([]CommitRef, 0, len(chunks))
+	for _, chunk := range chunks {
+		lines := strings.Split(strings.Trim(string(chunk), "\r\n"), "\n")
+		if len(lines) == 0 {
+			continue
+		}
+		fields := strings.Split(strings.TrimSuffix(lines[0], "\r"), "\x1f")
+		if len(fields) != 5 || strings.TrimSpace(fields[0]) == "" {
 			continue
 		}
 		ref := CommitRef{Hash: fields[0], ShortHash: fields[1], Subject: fields[2], Author: fields[3], Timestamp: fields[4]}
-		ref.Paths = commitPaths(ctx, runner, dir, ref.Hash)
+		seen := map[string]bool{}
+		for _, line := range lines[1:] {
+			path := strings.TrimSpace(line)
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			ref.Paths = append(ref.Paths, path)
+		}
+		sort.Strings(ref.Paths)
 		if len(query.Paths) > 0 && !pathOverlap(query.Paths, ref.Paths) {
 			continue
 		}
@@ -87,26 +102,6 @@ func FindCommits(ctx context.Context, runner GitRunner, query GitQuery) ([]Commi
 		}
 	}
 	return result, nil
-}
-
-func commitPaths(ctx context.Context, runner GitRunner, dir, hash string) []string {
-	data, err := runner.Run(ctx, dir, "show", "--format=", "--name-only", "--no-renames", hash)
-	if err != nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	paths := make([]string, 0)
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		path := strings.TrimSpace(scanner.Text())
-		if path == "" || seen[path] {
-			continue
-		}
-		seen[path] = true
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
 }
 
 func normalizePaths(paths []string) []string {
