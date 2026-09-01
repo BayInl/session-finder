@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/BayInl/session-finder/internal/record"
 )
 
 func TestDefaultIsOfflineAndDoesNotCallNetwork(t *testing.T) {
@@ -140,20 +138,6 @@ func TestOpenAIResponseRejectsUnknownOrMissingFields(t *testing.T) {
 			t.Fatalf("content %s error = %v", content, err)
 		}
 		server.Close()
-	}
-}
-
-func TestSignalClientOffline(t *testing.T) {
-	client := NewSignalClient(NewOffline())
-	bundle, err := client.Analyze(context.Background(), []record.MessageRecord{
-		{Role: "user", Text: "Looks good; all tests passed."},
-		{Role: "assistant", Text: "Done."},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bundle.RecommendedAction == "" || bundle.Confidence <= 0 {
-		t.Fatalf("bundle = %+v", bundle)
 	}
 }
 

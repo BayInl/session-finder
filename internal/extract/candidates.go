@@ -160,10 +160,6 @@ type CandidateInput struct {
 	RecommendedAction string
 }
 
-// CreateInput is retained as a readable alias for callers that prefer the
-// operation-oriented name.
-type CreateInput = CandidateInput
-
 // CandidateEvent is an append-only audit record.
 type CandidateEvent struct {
 	ID          int64  `json:"id"`
@@ -196,9 +192,6 @@ type Store struct {
 	now    func() time.Time
 	ownsDB bool
 }
-
-// CandidateStore is a compatibility alias emphasizing the store's purpose.
-type CandidateStore = Store
 
 func userHome() string {
 	home, err := os.UserHomeDir()
@@ -252,20 +245,6 @@ func Open(path string) (*Store, error) {
 	}
 	return store, nil
 }
-
-// OpenStore is an explicit synonym for Open.
-func OpenStore(path string) (*Store, error) { return Open(path) }
-
-// OpenCandidateStore is an explicit operation-oriented synonym for Open.
-func OpenCandidateStore(path string) (*Store, error) { return Open(path) }
-
-// NewStore opens a candidate store. It mirrors Open for callers that use
-// constructor naming.
-func NewStore(path string) (*Store, error) { return Open(path) }
-
-// NewCandidateStore opens a candidate store. It mirrors Open for downstream
-// feature packages that use the domain-oriented constructor name.
-func NewCandidateStore(path string) (*Store, error) { return Open(path) }
 
 // OpenDB wraps an already-opened database while preserving the caller's
 // connection ownership. Prefer Open for the normal self-owned path-based store.
@@ -363,14 +342,90 @@ BEFORE DELETE ON candidate_events BEGIN
 END;
 CREATE TABLE IF NOT EXISTS candidate_trash (
     candidate_id TEXT PRIMARY KEY REFERENCES candidates(id) ON DELETE RESTRICT,
-    session_id TEXT NOT NULL DEFAULT '',
-    deleted_at TEXT NOT NULL,
     previous_status TEXT NOT NULL,
     snapshot TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS candidate_supersessions (
+    candidate_id TEXT PRIMARY KEY REFERENCES candidates(id) ON DELETE RESTRICT,
+    replacement_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS candidate_supersessions_kind ON candidate_supersessions(kind, candidate_id);
 `
-	_, err := db.ExecContext(ctx, schema)
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	if err := migrateCandidateTrash(ctx, db); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO candidate_supersessions(candidate_id, replacement_id, kind)
+		SELECT candidate_events.candidate_id,
+		       trim(substr(candidate_events.reason, length('replaced by edit ') + 1)),
+		       candidates.kind
+		FROM candidate_events
+		JOIN candidates ON candidates.id = candidate_events.candidate_id
+		WHERE candidate_events.action = 'delete'
+		AND candidate_events.reason LIKE 'replaced by edit %'
+		AND EXISTS (
+			SELECT 1 FROM candidates AS replacement
+			WHERE replacement.id = trim(substr(candidate_events.reason, length('replaced by edit ') + 1))
+		)`)
 	return err
+}
+
+func migrateCandidateTrash(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(candidate_trash)")
+	if err != nil {
+		return err
+	}
+	legacy := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "session_id" || name == "deleted_at" {
+			legacy = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !legacy {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	rollback := func(err error) error {
+		_ = tx.Rollback()
+		return err
+	}
+	for _, statement := range []string{
+		"ALTER TABLE candidate_trash RENAME TO candidate_trash_legacy",
+		`CREATE TABLE candidate_trash (
+		    candidate_id TEXT PRIMARY KEY REFERENCES candidates(id) ON DELETE RESTRICT,
+		    previous_status TEXT NOT NULL,
+		    snapshot TEXT NOT NULL
+		)`,
+		`INSERT INTO candidate_trash(candidate_id, previous_status, snapshot)
+		 SELECT candidate_id, previous_status, snapshot FROM candidate_trash_legacy`,
+		"DROP TABLE candidate_trash_legacy",
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return rollback(err)
+		}
+	}
+	return tx.Commit()
 }
 
 func newID() (string, error) {
@@ -531,9 +586,31 @@ func (s *Store) Get(ctx context.Context, id string) (Candidate, error) {
 	return candidate, err
 }
 
-// GetCandidate is an explicit synonym for Get.
-func (s *Store) GetCandidate(ctx context.Context, id string) (Candidate, error) {
-	return s.Get(ctx, id)
+// SupersededIDs returns candidate IDs with a persisted replacement relation.
+func (s *Store) SupersededIDs(ctx context.Context, kind string) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT candidate_id FROM candidate_supersessions WHERE kind = ?`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[strings.TrimSpace(id)] = struct{}{}
+	}
+	return result, rows.Err()
+}
+
+// IsSuperseded reports whether a candidate has a persisted replacement relation.
+func (s *Store) IsSuperseded(ctx context.Context, kind, id string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM candidate_supersessions WHERE kind = ? AND candidate_id = ?
+	)`, kind, strings.TrimSpace(id)).Scan(&exists)
+	return exists != 0, err
 }
 
 // Create inserts a candidate and its create audit event in one transaction.
@@ -573,9 +650,83 @@ func (s *Store) Create(ctx context.Context, input CandidateInput) (Candidate, er
 	return candidate, nil
 }
 
-// CreateCandidate is an explicit synonym for Create.
-func (s *Store) CreateCandidate(ctx context.Context, input CandidateInput) (Candidate, error) {
-	return s.Create(ctx, input)
+// Replace creates a replacement candidate and deletes the old candidate in one
+// transaction. Either both audit trails are committed or neither mutation is.
+func (s *Store) Replace(ctx context.Context, oldID string, input CandidateInput, actor, reason string) (Candidate, error) {
+	now := timestamp(s.now())
+	replacement, err := candidateFromInput(input, now)
+	if err != nil {
+		return Candidate{}, err
+	}
+	evidence, err := evidenceJSON(replacement.SuccessEvidence)
+	if err != nil {
+		return Candidate{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Candidate{}, err
+	}
+	rollback := func(err error) (Candidate, error) {
+		_ = tx.Rollback()
+		return Candidate{}, err
+	}
+	old, err := scanCandidate(tx.QueryRowContext(ctx, "SELECT "+candidateColumns+" FROM candidates WHERE id = ?", oldID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return rollback(fmt.Errorf("%w: %s", ErrNotFound, oldID))
+	}
+	if err != nil {
+		return rollback(err)
+	}
+	if err := ValidateTransition(old.Status, StatusDeleted); err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO candidates(`+candidateColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		replacement.ID, replacement.SessionID, replacement.Tool, replacement.SourcePath, replacement.Kind,
+		replacement.Title, replacement.Summary, string(replacement.Payload), replacement.Status,
+		replacement.CreatedAt, replacement.UpdatedAt, replacement.DeletedAt, replacement.Confidence,
+		evidence, replacement.OneOffRisk, replacement.SecretRisk, replacement.RecommendedAction, replacement.Version); err != nil {
+		return rollback(err)
+	}
+	if err := insertEventAt(ctx, tx, replacement, ActionCreate, input.Actor, input.Reason, "", candidateHash(replacement), now); err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO candidate_supersessions(candidate_id, replacement_id, kind)
+		VALUES (?, ?, ?)`, old.ID, replacement.ID, replacement.Kind); err != nil {
+		return rollback(err)
+	}
+	snapshot, err := json.Marshal(old)
+	if err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO candidate_trash
+		(candidate_id, previous_status, snapshot) VALUES (?, ?, ?)`, old.ID, old.Status, string(snapshot)); err != nil {
+		return rollback(err)
+	}
+	deleted := old
+	deleted.Status = StatusDeleted
+	deleted.UpdatedAt = now
+	deleted.DeletedAt = now
+	deleted.Version++
+	result, err := tx.ExecContext(ctx, `UPDATE candidates SET status = ?, updated_at = ?, deleted_at = ?, version = ?
+		WHERE id = ? AND version = ?`, deleted.Status, deleted.UpdatedAt, deleted.DeletedAt,
+		deleted.Version, deleted.ID, old.Version)
+	if err != nil {
+		return rollback(err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err != nil {
+			return rollback(err)
+		}
+		return rollback(errors.New("candidate changed concurrently"))
+	}
+	if err := insertEventAt(ctx, tx, deleted, ActionDelete, actor, reason, candidateHash(old), candidateHash(deleted), now); err != nil {
+		return rollback(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Candidate{}, err
+	}
+	return replacement, nil
 }
 
 func insertEventAt(ctx context.Context, tx *sql.Tx, candidate Candidate, action, actor, reason, beforeHash, afterHash, at string) error {
@@ -627,8 +778,8 @@ func (s *Store) transition(ctx context.Context, id, to, actor, reason, action st
 			return Candidate{}, marshalErr
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO candidate_trash
-			(candidate_id, session_id, deleted_at, previous_status, snapshot) VALUES (?, ?, ?, ?, ?)`,
-			current.ID, current.SessionID, now, current.Status, string(snapshot)); err != nil {
+			(candidate_id, previous_status, snapshot) VALUES (?, ?, ?)`,
+			current.ID, current.Status, string(snapshot)); err != nil {
 			_ = tx.Rollback()
 			return Candidate{}, err
 		}
@@ -672,20 +823,10 @@ func (s *Store) Transition(ctx context.Context, id, to, actor, reason string) (C
 	return s.transition(ctx, id, to, actor, reason, ActionTransition)
 }
 
-// TransitionStatus is an explicit synonym for Transition.
-func (s *Store) TransitionStatus(ctx context.Context, id, to, actor, reason string) (Candidate, error) {
-	return s.Transition(ctx, id, to, actor, reason)
-}
-
 // Delete moves a candidate into the recoverable trash table and marks it
 // deleted. No candidate row is physically removed.
 func (s *Store) Delete(ctx context.Context, id, actor, reason string) (Candidate, error) {
 	return s.Transition(ctx, id, StatusDeleted, actor, reason)
-}
-
-// DeleteCandidate is an explicit synonym for Delete.
-func (s *Store) DeleteCandidate(ctx context.Context, id, actor, reason string) (Candidate, error) {
-	return s.Delete(ctx, id, actor, reason)
 }
 
 // Restore returns a deleted candidate to the status captured in trash.
@@ -770,11 +911,6 @@ func (s *Store) Restore(ctx context.Context, id, actor, reason string) (Candidat
 	return updated, nil
 }
 
-// RestoreCandidate is an explicit synonym for Restore.
-func (s *Store) RestoreCandidate(ctx context.Context, id, actor, reason string) (Candidate, error) {
-	return s.Restore(ctx, id, actor, reason)
-}
-
 // List returns candidates in stable newest-first order.
 func (s *Store) List(ctx context.Context, options ListOptions) ([]Candidate, error) {
 	where := []string{}
@@ -822,11 +958,6 @@ func (s *Store) List(ctx context.Context, options ListOptions) ([]Candidate, err
 	return result, rows.Err()
 }
 
-// ListCandidates is an explicit synonym for List.
-func (s *Store) ListCandidates(ctx context.Context, options ListOptions) ([]Candidate, error) {
-	return s.List(ctx, options)
-}
-
 // Events returns the complete append-only audit trail for a candidate.
 func (s *Store) Events(ctx context.Context, candidateID string) ([]CandidateEvent, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, candidate_id, session_id, action, actor,
@@ -845,11 +976,6 @@ func (s *Store) Events(ctx context.Context, candidateID string) ([]CandidateEven
 		result = append(result, event)
 	}
 	return result, rows.Err()
-}
-
-// CandidateEvents is an explicit synonym for Events.
-func (s *Store) CandidateEvents(ctx context.Context, candidateID string) ([]CandidateEvent, error) {
-	return s.Events(ctx, candidateID)
 }
 
 // Trash returns deleted candidates currently present in recoverable trash.

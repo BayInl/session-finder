@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -169,6 +170,35 @@ func TestCreateTransitionAuditAndRecoverableTrash(t *testing.T) {
 	}
 }
 
+func TestReplaceIsAtomic(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	old, err := store.Create(ctx, CandidateInput{ID: "old", SessionID: "s", Kind: "decision"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(ctx, CandidateInput{ID: "duplicate", SessionID: "s", Kind: "decision"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Replace(ctx, old.ID, CandidateInput{ID: "duplicate", SessionID: "s", Kind: "decision"}, "reviewer", "edit"); err == nil {
+		t.Fatal("replace with duplicate ID succeeded")
+	}
+	current, err := store.Get(ctx, old.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != StatusDetected || current.Version != old.Version {
+		t.Fatalf("old candidate changed after failed replace: %+v", current)
+	}
+	events, err := store.Events(ctx, old.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Action != ActionCreate {
+		t.Fatalf("old events after failed replace = %+v", events)
+	}
+}
+
 func candidateFromStatus(t *testing.T, candidate Candidate, status string) Candidate {
 	t.Helper()
 	candidate.Status = status
@@ -231,5 +261,94 @@ func TestRestoreRequiresTrashSnapshot(t *testing.T) {
 	}
 	if _, err := store.Restore(ctx, candidate.ID, "test", "restore"); !errors.Is(err, ErrCandidateNotDelete) {
 		t.Fatalf("restore without snapshot error = %v", err)
+	}
+}
+
+func TestInitializeSchemaMigratesLegacyTrash(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE candidates (
+			id TEXT PRIMARY KEY, session_id TEXT NOT NULL DEFAULT '', tool TEXT NOT NULL DEFAULT '',
+			source_path TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'detected',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT NOT NULL DEFAULT '',
+			confidence REAL NOT NULL DEFAULT 0, success_evidence TEXT NOT NULL DEFAULT '[]',
+			one_off_risk REAL NOT NULL DEFAULT 0, secret_risk REAL NOT NULL DEFAULT 0,
+			recommended_action TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1
+		);
+		CREATE TABLE candidate_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE RESTRICT,
+			session_id TEXT NOT NULL DEFAULT '', action TEXT NOT NULL, actor TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL, before_hash TEXT NOT NULL DEFAULT '', after_hash TEXT NOT NULL
+		);
+		CREATE TABLE candidate_trash (
+			candidate_id TEXT PRIMARY KEY REFERENCES candidates(id) ON DELETE RESTRICT,
+			session_id TEXT NOT NULL DEFAULT '', deleted_at TEXT NOT NULL,
+			previous_status TEXT NOT NULL, snapshot TEXT NOT NULL
+		);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	const snapshot = `{"id":"legacy","session_id":"session","payload":{},"status":"draft","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","success_evidence":[],"version":1}`
+	if _, err := db.ExecContext(ctx, `INSERT INTO candidates(id, session_id, kind, payload, status, created_at, updated_at, deleted_at, version)
+		VALUES ('legacy', 'session', 'decision', '{}', 'deleted', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', 2),
+		('replacement', 'session', 'decision', '{"supersedes":"legacy"}', 'detected', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', '', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO candidate_events(candidate_id, action, reason, timestamp, after_hash)
+		VALUES ('legacy', 'delete', 'replaced by edit replacement', '2026-01-02T00:00:00Z', 'hash')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO candidate_trash(candidate_id, session_id, deleted_at, previous_status, snapshot)
+		VALUES ('legacy', 'session', '2026-01-02T00:00:00Z', 'draft', ?)`, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitializeSchema(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(candidate_trash)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var columns []string
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"candidate_id", "previous_status", "snapshot"}; !reflect.DeepEqual(columns, want) {
+		t.Fatalf("candidate_trash columns = %v, want %v", columns, want)
+	}
+	store, err := OpenDB(db, "legacy.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isSuperseded, err := store.IsSuperseded(ctx, "decision", "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isSuperseded {
+		t.Fatal("legacy supersession was not backfilled")
+	}
+	restored, err := store.Restore(ctx, "legacy", "test", "restore migrated snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Status != StatusDraft || restored.SessionID != "session" {
+		t.Fatalf("restored candidate = %+v", restored)
 	}
 }

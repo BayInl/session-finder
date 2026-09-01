@@ -56,24 +56,10 @@ type SignalBundle struct {
 	RecommendedAction string   `json:"recommended_action"`
 }
 
-// SignalEngine applies deterministic, local heuristics to normalized records.
-// It never performs network calls and never emits transcript text.
-type SignalEngine struct{}
-
-// NewSignalEngine constructs the default offline signal engine.
-func NewSignalEngine() SignalEngine { return SignalEngine{} }
-
-// Analyze is the package-level convenience API for the default engine.
+// Analyze computes signal values from a normalized transcript. It performs no
+// network calls or transcript emission, and excludes system-injected noise
+// before any transition heuristic runs.
 func Analyze(messages []record.MessageRecord) SignalBundle {
-	return NewSignalEngine().Analyze(messages)
-}
-
-// AnalyzeSession is a readable alias used by session-oriented callers.
-func AnalyzeSession(messages []record.MessageRecord) SignalBundle { return Analyze(messages) }
-
-// Analyze computes signal values from a normalized transcript. Noise and
-// system-injected records are excluded before any transition heuristic runs.
-func (SignalEngine) Analyze(messages []record.MessageRecord) SignalBundle {
 	clean := filterSignalRecords(messages)
 	if len(clean) == 0 {
 		return SignalBundle{

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -43,10 +42,9 @@ func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractO
 	}
 	if len(clean) == 0 {
 		return CandidateBundle{
-			Quality:   EvaluateQuality(extract.Analyze(nil)),
-			Evidence:  []EvidenceBlock{},
-			Risks:     []string{"empty transcript"},
-			Conflicts: []string{},
+			Quality:  EvaluateQuality(extract.Analyze(nil)),
+			Evidence: []EvidenceBlock{},
+			Risks:    []string{"empty transcript"},
 		}, ErrNoTranscript
 	}
 
@@ -84,14 +82,13 @@ func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractO
 		Evidence:     SortEvidence(evidenceForMessages(clean)),
 		Quality:      quality,
 		Risks:        risksFromSignals(signals),
-		Conflicts:    []string{},
 		SessionID:    firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.SessionID }),
 		Tool:         firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.Tool }),
 		Title:        title,
 		CWD:          firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.CWD }),
 		SourcePath:   firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.SourcePath }),
 	}
-	if options.Judge != nil && quality.Disposition != QualitySuppress && quality.OneOffRisk < HighOneOffRisk && quality.SecretRisk < HighSecretRisk && len(quality.SuccessEvidence) >= MinimumSuccessEvidence && quality.Confidence < 0.85 {
+	if options.Judge != nil && quality.Disposition != QualitySuppress && quality.Signals.OneOffRisk < HighOneOffRisk && quality.Signals.SecretRisk < HighSecretRisk && len(quality.Signals.SuccessEvidence) >= MinimumSuccessEvidence && quality.Signals.Confidence < 0.85 {
 		judgment, err := options.Judge.Judge(context.Background(), candidateReview(clean, bundle))
 		if err != nil {
 			bundle.Quality.Reasons = appendSkillReason(bundle.Quality.Reasons, "llm:fallback")
@@ -104,11 +101,6 @@ func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractO
 
 // Extract is the concise public extraction API.
 func Extract(messages []record.MessageRecord) (CandidateBundle, error) {
-	return BuildCandidate(messages)
-}
-
-// ExtractBundle is an explicit alias for Extract.
-func ExtractBundle(messages []record.MessageRecord) (CandidateBundle, error) {
 	return BuildCandidate(messages)
 }
 
@@ -204,11 +196,6 @@ func ExtractAndPersistWithOptions(ctx context.Context, store *extract.Store, mes
 	return bundle, candidate, nil
 }
 
-// ExtractCandidate is a readable alias for ExtractAndPersist.
-func ExtractCandidate(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string) (CandidateBundle, extract.Candidate, error) {
-	return ExtractAndPersist(ctx, store, messages, actor)
-}
-
 // persistSkippedSession records a session that contains only filtered/system
 // records. Marking it failed prevents every compensation scan from retrying the
 // same unusable transcript while preserving an auditable reason for review.
@@ -233,7 +220,6 @@ func persistSkippedSession(ctx context.Context, store *extract.Store, session Pe
 		Evidence:     []EvidenceBlock{},
 		Quality:      EvaluateQuality(extract.Analyze(nil)),
 		Risks:        []string{"empty transcript"},
-		Conflicts:    []string{},
 		SessionID:    session.SessionID,
 		Tool:         session.Tool,
 		Title:        session.Title,
@@ -502,7 +488,3 @@ func SortPending(values []PendingSession) []PendingSession {
 	})
 	return result
 }
-
-// DefaultCandidateDBPath mirrors extract.DefaultDBPath without exposing a
-// second database default in callers.
-func DefaultCandidateDBPath() string { return filepath.Clean(extract.DefaultDBPath) }

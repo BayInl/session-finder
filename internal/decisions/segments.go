@@ -126,5 +126,3 @@ func isUsableDecisionSegment(role, text, signalText string) bool {
 	}
 	return true
 }
-
-func hasChoicePredicate(text string) bool { return segmentPredicateRE.MatchString(text) }

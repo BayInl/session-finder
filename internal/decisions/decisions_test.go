@@ -2,6 +2,7 @@ package decisions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -306,6 +307,56 @@ func TestStoreReviewEditHydratesPersistedSession(t *testing.T) {
 	}
 	if replacement.Context != edited.Context || replacement.Supersedes != created.ID {
 		t.Fatalf("replacement = %#v", replacement)
+	}
+	secondEdit := replacement
+	secondEdit.Context = "Choose SQLite for the second revision"
+	second, err := store.Review(context.Background(), ReviewInput{ID: replacement.ID, Action: ReviewEdit, Decision: &secondEdit, Messages: messages, Confirmed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Supersedes != replacement.ID {
+		t.Fatalf("second replacement supersedes = %q, want %q", second.Supersedes, replacement.ID)
+	}
+	middle, err := store.Get(context.Background(), replacement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if middle.Status != StatusSuperseded {
+		t.Fatalf("middle status = %q, want %q", middle.Status, StatusSuperseded)
+	}
+	old, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Status != StatusSuperseded {
+		t.Fatalf("old status = %q, want %q", old.Status, StatusSuperseded)
+	}
+	broken, err := store.candidates.Create(context.Background(), extract.CandidateInput{
+		ID: "broken-decision", Kind: KindDecision, Payload: json.RawMessage(`{"broken":true}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.candidates.Delete(context.Background(), broken.ID, "reviewer", "broken delete"); err != nil {
+		t.Fatal(err)
+	}
+	ordinary, err := store.Confirm(context.Background(), Scan([]record.MessageRecord{msg("s2", "user", "Choose Postgres because the shared deployment requires it.")})[0], []record.MessageRecord{msg("s2", "user", "Choose Postgres because the shared deployment requires it.")}, "user", "confirmed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.candidates.Delete(context.Background(), ordinary.ID, "reviewer", "ordinary delete"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.List(context.Background(), ListOptions{Status: StatusSuperseded, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("superseded decisions = %#v", listed)
+	}
+	listedIDs := map[string]bool{listed[0].ID: true, listed[1].ID: true}
+	if !listedIDs[created.ID] || !listedIDs[replacement.ID] {
+		t.Fatalf("superseded decisions = %#v", listed)
 	}
 }
 

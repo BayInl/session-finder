@@ -1,12 +1,10 @@
 package decisions
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/BayInl/session-finder/internal/llm"
@@ -68,18 +66,10 @@ type CandidateReview struct {
 // CandidateJudgment is the only model-controlled portion of a decision
 // candidate. A judge cannot rewrite Chosen, Rationale, Evidence, Outcome, or
 // any other durable candidate field.
-type CandidateJudgment struct {
-	Disposition string   `json:"disposition"`
-	Confidence  float64  `json:"confidence"`
-	ReasonCodes []string `json:"reason_codes"`
-	OneOffRisk  float64  `json:"one_off_risk"`
-	SecretRisk  float64  `json:"secret_risk"`
-}
+type CandidateJudgment = llm.JudgeResponse
 
 // CandidateJudgeSchema returns the strict candidate-specific response schema.
-func CandidateJudgeSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","additionalProperties":false,"required":["disposition","confidence","reason_codes","one_off_risk","secret_risk"],"properties":{"disposition":{"type":"string","enum":["draft","review","suppress"]},"confidence":{"type":"number","minimum":0,"maximum":1},"reason_codes":{"type":"array","items":{"type":"string"}},"one_off_risk":{"type":"number","minimum":0,"maximum":1},"secret_risk":{"type":"number","minimum":0,"maximum":1}}}`)
-}
+func CandidateJudgeSchema() json.RawMessage { return llm.JudgeResponseSchema() }
 
 // NewLLMCandidateJudge adapts the provider-agnostic LLM client to the
 // candidate-level contract. The existing client performs another redaction
@@ -118,40 +108,9 @@ func (j *llmCandidateJudge) Judge(ctx context.Context, review CandidateReview) (
 }
 
 func decodeCandidateJudgment(data []byte) (CandidateJudgment, error) {
-	if err := llm.ValidateJSONSchema(data, CandidateJudgeSchema()); err != nil {
+	judgment, err := llm.DecodeJudgeResponse(data)
+	if err != nil {
 		return CandidateJudgment{}, fmt.Errorf("candidate judge schema violation: %w", err)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var judgment CandidateJudgment
-	if err := decoder.Decode(&judgment); err != nil {
-		return CandidateJudgment{}, fmt.Errorf("candidate judge schema violation: %v", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return CandidateJudgment{}, errors.New("candidate judge schema violation: trailing JSON")
-		}
-		return CandidateJudgment{}, fmt.Errorf("candidate judge schema violation: trailing JSON: %v", err)
-	}
-	judgment.Disposition = strings.ToLower(strings.TrimSpace(judgment.Disposition))
-	if judgment.Disposition != "draft" && judgment.Disposition != "review" && judgment.Disposition != "suppress" {
-		return CandidateJudgment{}, fmt.Errorf("candidate judge schema violation: invalid disposition %q", judgment.Disposition)
-	}
-	if judgment.Confidence < 0 || judgment.Confidence > 1 || judgment.OneOffRisk < 0 || judgment.OneOffRisk > 1 || judgment.SecretRisk < 0 || judgment.SecretRisk > 1 {
-		return CandidateJudgment{}, errors.New("candidate judge schema violation: numeric values must be between 0 and 1")
-	}
-	if judgment.ReasonCodes == nil {
-		return CandidateJudgment{}, errors.New("candidate judge schema violation: reason_codes must be an array")
-	}
-	if len(judgment.ReasonCodes) > 32 {
-		return CandidateJudgment{}, errors.New("candidate judge schema violation: too many reason_codes")
-	}
-	for index, reason := range judgment.ReasonCodes {
-		judgment.ReasonCodes[index] = strings.TrimSpace(reason)
-		if judgment.ReasonCodes[index] == "" || len([]rune(judgment.ReasonCodes[index])) > 80 {
-			return CandidateJudgment{}, errors.New("candidate judge schema violation: invalid reason_codes item")
-		}
 	}
 	return judgment, nil
 }

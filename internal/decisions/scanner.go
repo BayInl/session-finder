@@ -10,7 +10,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/BayInl/session-finder/internal/extract"
 	"github.com/BayInl/session-finder/internal/record"
 )
 
@@ -64,12 +63,10 @@ var (
 )
 
 // ExtractOptions controls deterministic extraction and optional candidate-level
-// refinement. Judge is preferred; Refiner remains a compatibility hook for
-// callers that still provide the older typed signal adapter.
+// judgment.
 type ExtractOptions struct {
 	Judge         CandidateJudge
 	JudgeLimit    int
-	Refiner       Refiner
 	ConfidenceCut float64
 	MinConfidence float64
 	Extractor     string
@@ -77,11 +74,6 @@ type ExtractOptions struct {
 	// Extract path remains high-recall for callers that explicitly request a
 	// lower threshold; Scan and CLI paths enable this gate for user-visible data.
 	ResolvedOnly bool
-}
-
-// Refiner is the typed internal/llm boundary used for low-confidence review.
-type Refiner interface {
-	Analyze(context.Context, []record.MessageRecord) (extract.SignalBundle, error)
 }
 
 // Scan performs local candidate extraction for the user-visible decision list.
@@ -186,13 +178,12 @@ func isUsableChosen(chosen string, options []string) bool {
 }
 
 // ExtractContext is equivalent to Extract but lets a caller cancel optional
-// candidate-level refinement. Judge failures are non-fatal: the candidate is
-// retained with its deterministic rule result so network/configuration issues
-// cannot erase local extraction results.
+// candidate judgment. Judge failures are non-fatal: the candidate is retained
+// with its deterministic rule result so provider issues cannot erase local data.
 func ExtractContext(ctx context.Context, messages []record.MessageRecord, options ExtractOptions) ([]DecisionCandidate, error) {
 	baseOptions := ExtractOptions{Extractor: options.Extractor, ConfidenceCut: options.ConfidenceCut, MinConfidence: 0.4}
 	candidates := Extract(messages, baseOptions)
-	if len(candidates) == 0 {
+	if len(candidates) == 0 || options.Judge == nil {
 		return filterCandidatesWithOptions(candidates, options), nil
 	}
 	if options.ConfidenceCut <= 0 || options.ConfidenceCut >= 1 {
@@ -201,34 +192,7 @@ func ExtractContext(ctx context.Context, messages []record.MessageRecord, option
 	if options.MinConfidence <= 0 || options.MinConfidence >= 1 {
 		options.MinConfidence = 0.62
 	}
-	if options.Judge != nil {
-		return applyCandidateJudge(ctx, messages, candidates, options), nil
-	}
-	if options.Refiner == nil {
-		return filterCandidatesWithOptions(candidates, options), nil
-	}
-	// Compatibility path: invoke the legacy adapter per candidate window rather
-	// than broadcasting one session-level result to unrelated candidates. A
-	// non-fatal Refiner error deliberately keeps the deterministic local result.
-	for i := range candidates {
-		if candidates[i].Decision.Confidence >= options.ConfidenceCut {
-			continue
-		}
-		bundle, err := options.Refiner.Analyze(ctx, candidateMessages(messages, candidates[i]))
-		if err != nil {
-			continue
-		}
-		if bundle.RecommendedAction == extract.ActionSuppress {
-			candidates[i].Reasons = appendUnique(candidates[i].Reasons, "llm:suppress")
-			candidates[i].Decision.Confidence = 0
-			continue
-		}
-		if bundle.Confidence > candidates[i].Decision.Confidence {
-			candidates[i].Decision.Confidence = bundle.Confidence
-		}
-		candidates[i].Reasons = appendUnique(candidates[i].Reasons, "llm:"+bundle.IntentKind)
-	}
-	return filterCandidatesWithOptions(candidates, options), nil
+	return applyCandidateJudge(ctx, messages, candidates, options), nil
 }
 
 func applyCandidateJudge(ctx context.Context, messages []record.MessageRecord, candidates []DecisionCandidate, options ExtractOptions) []DecisionCandidate {
@@ -265,12 +229,6 @@ func applyJudgment(candidate DecisionCandidate, judgment CandidateJudgment) Deci
 	for _, reason := range judgment.ReasonCodes {
 		candidate.Reasons = appendUnique(candidate.Reasons, "llm:reason:"+strings.TrimSpace(reason))
 	}
-	if judgment.OneOffRisk > candidateOneOffRisk(candidate) {
-		candidate.Reasons = appendUnique(candidate.Reasons, "llm:one-off-risk")
-	}
-	if judgment.SecretRisk > candidateSecretRisk(candidate) {
-		candidate.Reasons = appendUnique(candidate.Reasons, "llm:secret-risk")
-	}
 	switch action {
 	case "suppress":
 		candidate.Decision.Confidence = 0
@@ -286,36 +244,6 @@ func applyJudgment(candidate DecisionCandidate, judgment CandidateJudgment) Deci
 		candidate.Reasons = appendUnique(candidate.Reasons, "llm:review")
 	}
 	return candidate
-}
-
-func candidateOneOffRisk(candidate DecisionCandidate) float64 {
-	if containsString(candidate.Reasons, "one-off-risk") {
-		return 1
-	}
-	return 0
-}
-
-func candidateSecretRisk(candidate DecisionCandidate) float64 {
-	if containsString(candidate.Reasons, "secret-risk") {
-		return 1
-	}
-	return 0
-}
-
-func candidateMessages(messages []record.MessageRecord, candidate DecisionCandidate) []record.MessageRecord {
-	review := decisionCandidateReview(messages, candidate)
-	result := make([]record.MessageRecord, 0, len(review.Messages))
-	for _, message := range review.Messages {
-		if message.Index <= 0 || message.Index > len(messages) {
-			continue
-		}
-		result = append(result, messages[message.Index-1])
-	}
-	return result
-}
-
-func filterCandidates(candidates []DecisionCandidate, minConfidence float64) []DecisionCandidate {
-	return filterCandidatesWithOptions(candidates, ExtractOptions{MinConfidence: minConfidence})
 }
 
 func filterCandidatesWithOptions(candidates []DecisionCandidate, options ExtractOptions) []DecisionCandidate {
@@ -353,19 +281,6 @@ func cleanScanMessages(messages []record.MessageRecord) []scanMessage {
 		clean = append(clean, scanMessage{MessageRecord: message, OriginalIndex: originalIndex})
 	}
 	return clean
-}
-
-func cleanMessages(messages []record.MessageRecord) []record.MessageRecord {
-	clean := cleanScanMessages(messages)
-	result := make([]record.MessageRecord, 0, len(clean))
-	for _, item := range clean {
-		result = append(result, item.MessageRecord)
-	}
-	return result
-}
-
-func isScannableMessage(message record.MessageRecord) bool {
-	return strings.TrimSpace(message.Text) != "" && (strings.EqualFold(message.Role, "user") || strings.EqualFold(message.Role, "assistant"))
 }
 
 func isNoise(text string) bool {
@@ -483,18 +398,6 @@ func candidateFromSegment(messages []scanMessage, index int, segment decisionSeg
 		Provenance: Provenance{Tool: message.Tool, SourcePath: message.SourcePath, SessionID: message.SessionID, Extractor: extractor, MessageStart: messageIndex, MessageEnd: messageIndex},
 	}
 	return DecisionCandidate{Decision: decision, Reasons: reasons}
-}
-
-func candidateFromMessage(messages []record.MessageRecord, index int, extractor string) DecisionCandidate {
-	clean := cleanScanMessages(messages)
-	if index < 0 || index >= len(clean) {
-		return DecisionCandidate{}
-	}
-	segments := splitDecisionSegments(clean[index].Text)
-	if len(segments) == 0 {
-		return DecisionCandidate{}
-	}
-	return candidateFromSegment(clean, index, segments[0], extractor)
 }
 
 func attachConfirmation(candidates []DecisionCandidate, message record.MessageRecord, text string, index int) bool {

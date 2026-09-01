@@ -33,13 +33,8 @@ var (
 	privateKeyEvidenceRE       = regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----`)
 )
 
-// QualityGate applies the non-negotiable suppression rules from the skill
+// EvaluateQuality applies the non-negotiable suppression rules from the skill
 // compiler contract. It is deterministic and safe to run without an LLM.
-func QualityGate(signals extract.SignalBundle) QualityReport {
-	return EvaluateQuality(signals)
-}
-
-// EvaluateQuality is an explicit alias for QualityGate.
 func EvaluateQuality(signals extract.SignalBundle) QualityReport {
 	reasons := []string{}
 	if len(signals.SuccessEvidence) < MinimumSuccessEvidence {
@@ -52,17 +47,7 @@ func EvaluateQuality(signals extract.SignalBundle) QualityReport {
 		reasons = append(reasons, fmt.Sprintf("secret risk %.2f is high", signals.SecretRisk))
 	}
 	if len(reasons) > 0 {
-		return QualityReport{
-			Disposition:       QualitySuppress,
-			Score:             0,
-			Reasons:           reasons,
-			SuccessEvidence:   append([]string(nil), signals.SuccessEvidence...),
-			OneOffRisk:        signals.OneOffRisk,
-			SecretRisk:        signals.SecretRisk,
-			Confidence:        signals.Confidence,
-			RecommendedAction: signals.RecommendedAction,
-			Signals:           signals,
-		}
+		return QualityReport{Disposition: QualitySuppress, Reasons: reasons, Signals: signals}
 	}
 	// Confidence is the only quality score exposed by the local signal engine.
 	// Keep it in [0,1] and reward independent evidence without overfitting.
@@ -73,31 +58,17 @@ func EvaluateQuality(signals extract.SignalBundle) QualityReport {
 	if score > 1 {
 		score = 1
 	}
-	return QualityReport{
-		Disposition:       QualityDraft,
-		Score:             score,
-		Reasons:           []string{},
-		SuccessEvidence:   append([]string(nil), signals.SuccessEvidence...),
-		OneOffRisk:        signals.OneOffRisk,
-		SecretRisk:        signals.SecretRisk,
-		Confidence:        signals.Confidence,
-		RecommendedAction: signals.RecommendedAction,
-		Signals:           signals,
-	}
+	return QualityReport{Disposition: QualityDraft, Score: score, Reasons: []string{}, Signals: signals}
 }
 
 // QualityGateMessages analyzes and gates a normalized transcript in one call.
 func QualityGateMessages(messages []record.MessageRecord) QualityReport {
-	return QualityGate(extract.Analyze(messages))
+	return EvaluateQuality(extract.Analyze(messages))
 }
 
 // IsSuppressed reports whether a quality report must not proceed to review or
 // publication without a new, human-approved candidate.
 func IsSuppressed(report QualityReport) bool { return report.Disposition == QualitySuppress }
-
-// BuildQualityReport is a compatibility alias used by callers that prefer a
-// constructor-like name.
-func BuildQualityReport(signals extract.SignalBundle) QualityReport { return QualityGate(signals) }
 
 func minFloat(left, right float64) float64 {
 	if left < right {
@@ -132,7 +103,6 @@ func evidenceForMessages(messages []record.MessageRecord) []EvidenceBlock {
 			result = append(result, EvidenceBlock{
 				ID:           fmt.Sprintf("evidence-%d", len(result)+1),
 				Kind:         kind,
-				Type:         kind,
 				SessionID:    message.SessionID,
 				MessageIndex: i,
 				Role:         strings.ToLower(strings.TrimSpace(message.Role)),

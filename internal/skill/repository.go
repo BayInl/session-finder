@@ -45,9 +45,6 @@ func Open(path string) (*Repository, error) {
 	return &Repository{store: store, db: db, path: resolvedPath}, nil
 }
 
-// OpenRepository is an explicit alias for Open.
-func OpenRepository(path string) (*Repository, error) { return Open(path) }
-
 // Close closes the underlying candidate store and its shared database.
 func (r *Repository) Close() error {
 	if r == nil {
@@ -367,9 +364,6 @@ func SplitBundle(bundle CandidateBundle, evidenceID string) (CandidateBundle, Ca
 	left.Evidence = append(left.Evidence, bundle.Evidence[selected+1:]...)
 	right := bundle
 	right.Evidence = []EvidenceBlock{bundle.Evidence[selected]}
-	if len(left.Evidence) == 0 {
-		left.Evidence = []EvidenceBlock{bundle.Evidence[selected]}
-	}
 	return normalizeBundle(left), normalizeBundle(right), nil
 }
 
@@ -409,10 +403,6 @@ func publishAndTransition(bundle CandidateBundle, options PublishOptions, transi
 	result, err := Publish(bundle, options)
 	if err != nil {
 		return result, err
-	}
-	if transition == nil {
-		_ = os.RemoveAll(result.Path)
-		return PublishResult{}, errors.New("nil publish transition")
 	}
 	if transitionErr := transition(result.Path); transitionErr != nil {
 		if cleanupErr := os.RemoveAll(result.Path); cleanupErr != nil {
@@ -482,23 +472,10 @@ func (r *Repository) updateBundle(ctx context.Context, candidate extract.Candida
 	if candidate.Status == extract.StatusDeleted {
 		return extract.Candidate{}, extract.ErrCandidateDeleted
 	}
-	db := r.db
-	closeDB := false
-	if db == nil {
-		db, err = openSQLite(r.path)
-		if err != nil {
-			return extract.Candidate{}, err
-		}
-		closeDB = true
-		if err := extract.InitializeSchema(ctx, db); err != nil {
-			_ = db.Close()
-			return extract.Candidate{}, err
-		}
+	if r == nil || r.db == nil {
+		return extract.Candidate{}, errors.New("nil skill repository")
 	}
-	if closeDB {
-		defer db.Close()
-	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return extract.Candidate{}, err
 	}
