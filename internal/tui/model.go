@@ -24,11 +24,13 @@ const (
 )
 
 type searchMsg struct {
+	seq     uint64
 	results []index.SearchResult
 	err     error
 }
 
 type showMsg struct {
+	seq       uint64
 	sessionID string
 	rows      []index.ShowRow
 	err       error
@@ -36,19 +38,21 @@ type showMsg struct {
 
 // Model is the Bubble Tea root model for the session-finder TUI.
 type Model struct {
-	cfg    Config
 	store  Backend
 	theme  ui.Theme
 	color  bool
 	keys   keyMap
+	limit  int
 	width  int
 	height int
 
-	query   string
-	tool    string
-	hits    []ui.SearchHit
-	err     string
-	loading bool
+	query     string
+	tool      string
+	hits      []ui.SearchHit
+	err       string
+	loading   bool
+	searchSeq uint64
+	showSeq   uint64
 
 	list     list.Model
 	viewport viewport.Model
@@ -71,7 +75,7 @@ func New(cfg Config, store Backend, w io.Writer) Model {
 		w = io.Discard
 	}
 	theme := ui.NewTheme(w)
-	color := ui.ColorEnabled(w)
+	color := theme.ColorEnabled()
 	width, height := defaultWidth, defaultHeight
 	sessionList, vp, input, h := newComponents(theme, color, width, height)
 	query := strings.TrimSpace(cfg.Query)
@@ -79,20 +83,21 @@ func New(cfg Config, store Backend, w io.Writer) Model {
 		input.SetValue(query)
 	}
 	m := Model{
-		cfg:      cfg,
-		store:    store,
-		theme:    theme,
-		color:    color,
-		keys:     newKeyMap(),
-		width:    width,
-		height:   height,
-		query:    query,
-		tool:     strings.TrimSpace(cfg.Tool),
-		list:     sessionList,
-		viewport: vp,
-		input:    input,
-		help:     h,
-		loading:  true,
+		store:     store,
+		theme:     theme,
+		color:     color,
+		keys:      newKeyMap(),
+		limit:     cfg.Limit,
+		width:     width,
+		height:    height,
+		query:     query,
+		tool:      strings.TrimSpace(cfg.Tool),
+		list:      sessionList,
+		viewport:  vp,
+		input:     input,
+		help:      h,
+		loading:   true,
+		searchSeq: 1,
 	}
 	m.layout()
 	return m
@@ -106,23 +111,35 @@ func (m Model) searchCmd() tea.Cmd {
 	if m.store == nil {
 		return nil
 	}
-	query, tool, limit := m.query, m.tool, m.cfg.Limit
+	seq, query, tool, limit := m.searchSeq, m.query, m.tool, m.limit
 	store := m.store
 	return func() tea.Msg {
 		results, err := store.Search(query, tool, limit)
-		return searchMsg{results: results, err: err}
+		return searchMsg{seq: seq, results: results, err: err}
 	}
+}
+
+func (m *Model) startSearch() tea.Cmd {
+	m.searchSeq++
+	m.showSeq++
+	m.loading = true
+	return m.searchCmd()
 }
 
 func (m Model) showCmd(sessionID string) tea.Cmd {
 	if m.store == nil || sessionID == "" {
 		return nil
 	}
-	store := m.store
+	seq, store := m.showSeq, m.store
 	return func() tea.Msg {
 		rows, err := store.Show(sessionID)
-		return showMsg{sessionID: sessionID, rows: rows, err: err}
+		return showMsg{seq: seq, sessionID: sessionID, rows: rows, err: err}
 	}
+}
+
+func (m *Model) startShow(sessionID string) tea.Cmd {
+	m.showSeq++
+	return m.showCmd(sessionID)
 }
 
 // Update handles keys, resize, search/show results, and mouse wheel.
@@ -136,6 +153,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case searchMsg:
+		if msg.seq != m.searchSeq {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err.Error()
@@ -155,6 +175,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case showMsg:
+		if msg.seq != m.showSeq {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.err = msg.err.Error()
 			return m, nil
@@ -166,15 +189,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
-		m.viewport, _ = m.viewport.Update(msg)
+		if m.focus == paneDetail {
+			m.viewport, _ = m.viewport.Update(msg)
+			return m, nil
+		}
+		delta := maxInt(1, m.viewport.MouseWheelDelta)
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.moveList(-delta)
+		case tea.MouseWheelDown:
+			m.moveList(delta)
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
-	case tea.KeyMsg:
-		if _, ok := msg.(tea.KeyReleaseMsg); ok {
-			return m, nil
-		}
+	case tea.KeyReleaseMsg:
+		return m, nil
 	}
 	return m, nil
 }
@@ -243,8 +274,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case bindingHit(msg, m.keys.ToolCycle):
 		m.tool = nextTool(m.tool)
-		m.loading = true
-		return m, m.searchCmd()
+		return m, m.startSearch()
 	case len(msg.String()) == 1 && msg.String()[0] >= '1' && msg.String()[0] <= '5':
 		idx := int(msg.String()[0] - '1')
 		if idx >= 0 && idx < len(record.Tools) {
@@ -253,8 +283,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.tool = record.Tools[idx]
 			}
-			m.loading = true
-			return m, m.searchCmd()
+			return m, m.startSearch()
 		}
 	case bindingHit(msg, m.keys.Load):
 		hit := m.selectedHit()
@@ -262,49 +291,61 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.focus = paneDetail
-		return m, m.showCmd(hit.SessionID)
+		return m, m.startShow(hit.SessionID)
 	case bindingHit(msg, m.keys.PageUp):
-		m.viewport.PageUp()
+		if m.focus == paneDetail {
+			m.viewport.PageUp()
+		} else {
+			m.moveList(-m.listPageSize())
+		}
 		return m, nil
 	case bindingHit(msg, m.keys.PageDown):
-		m.viewport.PageDown()
+		if m.focus == paneDetail {
+			m.viewport.PageDown()
+		} else {
+			m.moveList(m.listPageSize())
+		}
 		return m, nil
 	case bindingHit(msg, m.keys.HalfUp):
-		m.viewport.HalfPageUp()
+		if m.focus == paneDetail {
+			m.viewport.HalfPageUp()
+		} else {
+			m.moveList(-maxInt(1, m.listPageSize()/2))
+		}
 		return m, nil
 	case bindingHit(msg, m.keys.HalfDown):
-		m.viewport.HalfPageDown()
+		if m.focus == paneDetail {
+			m.viewport.HalfPageDown()
+		} else {
+			m.moveList(maxInt(1, m.listPageSize()/2))
+		}
 		return m, nil
 	case bindingHit(msg, m.keys.Top):
 		if m.focus == paneDetail {
 			m.viewport.GotoTop()
 		} else {
-			m.list.Select(0)
-			m.refreshDetail()
+			m.selectList(0)
 		}
 		return m, nil
 	case bindingHit(msg, m.keys.Bottom):
 		if m.focus == paneDetail {
 			m.viewport.GotoBottom()
 		} else if n := len(m.list.Items()); n > 0 {
-			m.list.Select(n - 1)
-			m.refreshDetail()
+			m.selectList(n - 1)
 		}
 		return m, nil
 	case bindingHit(msg, m.keys.Up):
 		if m.focus == paneDetail {
 			m.viewport.ScrollUp(1)
 		} else {
-			m.list.CursorUp()
-			m.refreshDetail()
+			m.moveList(-1)
 		}
 		return m, nil
 	case bindingHit(msg, m.keys.Down):
 		if m.focus == paneDetail {
 			m.viewport.ScrollDown(1)
 		} else {
-			m.list.CursorDown()
-			m.refreshDetail()
+			m.moveList(1)
 		}
 		return m, nil
 	}
@@ -324,9 +365,8 @@ func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.searching = false
 		m.input.Blur()
 		m.query = strings.TrimSpace(m.input.Value())
-		m.loading = true
 		m.focus = paneList
-		return m, m.searchCmd()
+		return m, m.startSearch()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -334,12 +374,6 @@ func (m Model) updateSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) escBack() (tea.Model, tea.Cmd) {
-	if m.searching {
-		m.searching = false
-		m.input.Blur()
-		m.input.SetValue(m.query)
-		return m, nil
-	}
 	if m.focus == paneDetail {
 		m.focus = paneList
 		return m, nil
@@ -348,17 +382,12 @@ func (m Model) escBack() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) goBack() (tea.Model, tea.Cmd) {
-	if m.searching {
-		m.searching = false
-		m.input.Blur()
-		m.input.SetValue(m.query)
-		return m, nil
-	}
 	if m.focus == paneDetail {
 		m.focus = paneList
 		return m, nil
 	}
 	if m.loadedID != "" || len(m.detail) > 0 {
+		m.showSeq++
 		m.loadedID = ""
 		m.detail = nil
 		m.refreshDetail()
@@ -366,14 +395,12 @@ func (m Model) goBack() (tea.Model, tea.Cmd) {
 	}
 	if m.tool != "" {
 		m.tool = ""
-		m.loading = true
-		return m, m.searchCmd()
+		return m, m.startSearch()
 	}
 	if m.query != "" {
 		m.query = ""
 		m.input.SetValue("")
-		m.loading = true
-		return m, m.searchCmd()
+		return m, m.startSearch()
 	}
 	return m, tea.Quit
 }
@@ -396,6 +423,34 @@ func (m Model) selectedHit() *ui.SearchHit {
 	}
 	hit := item.hit
 	return &hit
+}
+
+func (m Model) listPageSize() int {
+	return maxInt(1, m.list.Height())
+}
+
+func (m *Model) moveList(delta int) {
+	items := m.list.Items()
+	if len(items) == 0 || delta == 0 {
+		return
+	}
+	index := m.list.Index() + delta
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(items) {
+		index = len(items) - 1
+	}
+	m.selectList(index)
+}
+
+func (m *Model) selectList(index int) {
+	previous := m.list.Index()
+	m.list.Select(index)
+	if m.list.Index() != previous {
+		m.showSeq++
+	}
+	m.refreshDetail()
 }
 
 func (m *Model) layout() {

@@ -32,7 +32,6 @@ type Config struct {
 	Limit         int
 	DBPath        string
 	IncludeSystem bool
-	Writer        io.Writer
 }
 
 // Backend loads search hits and session transcripts. Tests inject a fake.
@@ -55,13 +54,7 @@ func ShouldLaunch(w io.Writer) bool {
 
 // Run opens the alt-screen TUI. The caller must have already checked ShouldLaunch.
 func Run(cfg Config) error {
-	if cfg.Limit <= 0 {
-		cfg.Limit = defaultLimit
-	}
-	w := cfg.Writer
-	if w == nil {
-		w = os.Stdout
-	}
+	w := os.Stdout
 	db, err := index.Open(cfg.DBPath)
 	if err != nil {
 		return err

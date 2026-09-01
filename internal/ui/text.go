@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -16,6 +17,10 @@ var (
 )
 
 func StripANSI(s string) string {
+	return stripANSI(s, true)
+}
+
+func stripANSI(s string, flattenWhitespace bool) string {
 	var result strings.Builder
 	result.Grow(len(s))
 	for i := 0; i < len(s); {
@@ -60,7 +65,11 @@ func StripANSI(s string) string {
 		i += size
 		if runeValue < 0x20 || runeValue == 0x7f {
 			if runeValue == '\n' || runeValue == '\r' || runeValue == '\t' {
-				result.WriteByte(' ')
+				if flattenWhitespace {
+					result.WriteByte(' ')
+				} else {
+					result.WriteRune(runeValue)
+				}
 			}
 			continue
 		}
@@ -144,9 +153,28 @@ func cutWidth(s string, max int) (head, rest string) {
 	return head, rest
 }
 
+func cutWidthExact(s string, max int) (head, rest string) {
+	if max <= 0 {
+		return "", s
+	}
+	if DisplayWidth(s) <= max {
+		return s, ""
+	}
+	width := 0
+	cut := len(s)
+	for i, runeValue := range s {
+		if width+cellWidth(runeValue) > max {
+			cut = i
+			break
+		}
+		width += cellWidth(runeValue)
+	}
+	return s[:cut], s[cut:]
+}
+
 func wrapLines(s string, width, maxLines int) []string {
 	s = PlainField(s)
-	if s == "" || s == "-" {
+	if s == "" {
 		return nil
 	}
 	if maxLines == 0 {
@@ -175,18 +203,41 @@ func wrapLines(s string, width, maxLines int) []string {
 	return lines
 }
 
-// WrapLines wraps plain text to width display cells. maxLines 0 means no cap.
+// WrapLines wraps compact plain text to width display cells. maxLines 0 means no cap.
 func WrapLines(s string, width, maxLines int) []string {
 	return wrapLines(s, width, maxLines)
 }
 
+// WrapTextLines preserves real line breaks and indentation while wrapping transcript text.
+func WrapTextLines(s string, width int) []string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	logical := strings.Split(s, "\n")
+	lines := make([]string, 0, len(logical))
+	if width < 8 {
+		width = 8
+	}
+	for _, raw := range logical {
+		clean := stripANSI(raw, false)
+		if clean == "" {
+			lines = append(lines, "")
+			continue
+		}
+		for rest := clean; rest != ""; {
+			head, next := cutWidthExact(rest, width)
+			if head == "" {
+				break
+			}
+			lines = append(lines, head)
+			rest = next
+		}
+	}
+	return lines
+}
+
 func PlainField(s string) string {
 	s = StripANSI(s)
-	s = strings.Join(strings.Fields(s), " ")
-	if s == "" {
-		return "-"
-	}
-	return s
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func dash(value string) string {
@@ -200,7 +251,7 @@ func PathSummary(paths []string) string {
 	if len(paths) == 0 {
 		return "-"
 	}
-	path := PlainField(paths[0])
+	path := dash(PlainField(paths[0]))
 	if len(paths) > 1 {
 		path += fmt.Sprintf(" (+%d)", len(paths)-1)
 	}
@@ -286,26 +337,39 @@ func writeUnicodeEscape(result *strings.Builder, char rune) {
 	}
 }
 
-// Preview flattens stored/escaped whitespace so match windows stay readable.
+// Preview collapses real whitespace for compact match windows without interpreting escapes.
 func Preview(s string) string {
-	s = strings.NewReplacer(`\r\n`, " ", `\n`, " ", `\r`, " ", `\t`, " ", `\"`, `"`).Replace(s)
 	return PlainField(s)
+}
+
+type highlightTerm struct {
+	runes []rune
 }
 
 func HighlightTerms(s string, terms []string, match lipgloss.Style) string {
 	if len(terms) == 0 || s == "" {
 		return s
 	}
+	prepared := make([]highlightTerm, 0, len(terms))
+	for _, term := range terms {
+		runes := []rune(term)
+		if len(runes) > 0 {
+			prepared = append(prepared, highlightTerm{runes: runes})
+		}
+	}
+	if len(prepared) == 0 {
+		return s
+	}
+	sort.SliceStable(prepared, func(i, j int) bool {
+		return len(prepared[i].runes) > len(prepared[j].runes)
+	})
 	runes := []rune(s)
 	var result strings.Builder
 	for i := 0; i < len(runes); {
 		found := 0
-		for _, term := range terms {
-			n := len([]rune(term))
-			if n == 0 || i+n > len(runes) {
-				continue
-			}
-			if strings.EqualFold(string(runes[i:i+n]), term) {
+		for _, term := range prepared {
+			n := len(term.runes)
+			if i+n <= len(runes) && equalFoldRunes(runes[i:i+n], term.runes) {
 				found = n
 				break
 			}
@@ -319,6 +383,15 @@ func HighlightTerms(s string, terms []string, match lipgloss.Style) string {
 		i++
 	}
 	return result.String()
+}
+
+func equalFoldRunes(left, right []rune) bool {
+	for i := range left {
+		if unicode.ToLower(left[i]) != unicode.ToLower(right[i]) && unicode.ToUpper(left[i]) != unicode.ToUpper(right[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func ShortID(sessionID string) string {

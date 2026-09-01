@@ -57,6 +57,9 @@ func TestWrapLinesRespectsMaxAndWidth(t *testing.T) {
 	if got := wrapLines("", 8, 3); got != nil {
 		t.Fatalf("empty wrap = %#v", got)
 	}
+	if got := wrapLines("-", 8, 3); len(got) != 1 || got[0] != "-" {
+		t.Fatalf("literal dash wrap = %#v", got)
+	}
 }
 
 func TestTruncateCJKAndStripANSI(t *testing.T) {
@@ -82,6 +85,12 @@ func TestTruncateCJKAndStripANSI(t *testing.T) {
 func TestPlainFieldPathSummaryRelativeTime(t *testing.T) {
 	if got := PlainField("  hello\nworld\t"); got != "hello world" {
 		t.Fatalf("PlainField = %q", got)
+	}
+	if got := PlainField(""); got != "" {
+		t.Fatalf("empty PlainField = %q", got)
+	}
+	if got := PlainField("-"); got != "-" {
+		t.Fatalf("literal dash PlainField = %q", got)
 	}
 	if got := PathSummary([]string{"/one", "/two", "/three"}); got != "/one (+2)" {
 		t.Fatalf("PathSummary = %q", got)
@@ -136,7 +145,7 @@ func TestRenderSearchPipeHasNoANSI(t *testing.T) {
 	if strings.Contains(out, "title:") && strings.Contains(out, "\n  title:") {
 		t.Fatalf("verbose expanded on pipe: %q", out)
 	}
-	if !strings.Contains(out, "1. [codex] session-1 | title=Question | snippet=alpha snippet | path=/one | messages=2 | updated=2024-01-01T00:00:00Z") {
+	if !strings.Contains(out, "1. [codex] session-1 | title=Question | snippet=alpha snippet | path=/one | matches=2 | updated=2024-01-01T00:00:00Z") {
 		t.Fatalf("one-liner missing: %q", out)
 	}
 	if strings.Count(strings.TrimSpace(out), "\n") != 1 {
@@ -234,6 +243,23 @@ func TestIndexProgressNonTTYWarning(t *testing.T) {
 	if strings.Contains(buf.String(), "\x1b") {
 		t.Fatalf("non-TTY warning leaked ANSI: %q", buf.String())
 	}
+}
+
+func TestIndexProgressUsesReportedDone(t *testing.T) {
+	p := NewIndexProgress(io.Discard)
+	p.tty = true
+	p.Report(0, 0, record.SourceSpec{}, nil)
+	p.Report(0, 5, record.SourceSpec{}, nil)
+	p.Report(3, 5, record.SourceSpec{Tool: "codex", Path: "/tmp/three.jsonl"}, nil)
+	if p.bar == nil || p.bar.Value() != 3 {
+		t.Fatalf("bar after done=3: %#v", p.bar)
+	}
+	p.Report(3, 5, record.SourceSpec{Tool: "codex", Path: "/tmp/three.jsonl"}, nil)
+	if p.bar.Value() != 3 {
+		t.Fatalf("duplicate report incremented bar: %d", p.bar.Value())
+	}
+	p.Close()
+	p.Close()
 }
 
 func TestShortID(t *testing.T) {
@@ -344,10 +370,38 @@ func TestHighlightKeepsTermContiguous(t *testing.T) {
 	}
 }
 
-func TestPreviewFlattensEscapes(t *testing.T) {
-	got := Preview(`foo\nbar\t\"baz\"`)
-	if got != `foo bar "baz"` {
+func TestPreviewPreservesLiteralEscapes(t *testing.T) {
+	got := Preview("foo\nbar\t" + `\n\t\"baz\"`)
+	if got != `foo bar \n\t\"baz\"` {
 		t.Fatalf("Preview = %q", got)
+	}
+}
+
+func TestWrapTextLinesPreservesCodeLayout(t *testing.T) {
+	got := WrapTextLines("if ok {\n\treturn `\\n`\n}", 40)
+	want := []string{"if ok {", "\treturn `\\n`", "}"}
+	if len(got) != len(want) {
+		t.Fatalf("WrapTextLines = %#v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("WrapTextLines[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestWrapTextLinesDoesNotDropWrapWhitespace(t *testing.T) {
+	got := WrapTextLines("alpha beta", 8)
+	if strings.Join(got, "") != "alpha beta" {
+		t.Fatalf("wrapped text changed content: %#v", got)
+	}
+}
+
+func TestHighlightPrefersLongestTerm(t *testing.T) {
+	style := lipgloss.NewStyle().Underline(true)
+	got := HighlightTerms("hello", []string{"he", "hello"}, style)
+	if StripANSI(got) != "hello" || strings.Count(got, "\x1b[") != 10 {
+		t.Fatalf("longest highlight = %q", got)
 	}
 }
 

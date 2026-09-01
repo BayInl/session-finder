@@ -93,6 +93,18 @@ func newTestModel(t *testing.T) Model {
 
 func apply(t *testing.T, m Model, msg tea.Msg) Model {
 	t.Helper()
+	switch value := msg.(type) {
+	case searchMsg:
+		if value.seq == 0 {
+			value.seq = m.searchSeq
+			msg = value
+		}
+	case showMsg:
+		if value.seq == 0 {
+			value.seq = m.showSeq
+			msg = value
+		}
+	}
 	next, cmd := m.Update(msg)
 	model, ok := next.(Model)
 	if !ok {
@@ -225,6 +237,35 @@ func TestEscFromDetailThenQuits(t *testing.T) {
 	}
 }
 
+func TestSearchEscRestoresQuery(t *testing.T) {
+	m := New(Config{Query: "alpha", Limit: 20}, fakeStore{hits: testHits()}, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()[:1]})
+	m = applyKey(t, m, "/")
+	m = applyKey(t, m, "x")
+	m = applyKey(t, m, "esc")
+	if m.searching || m.input.Value() != "alpha" || m.query != "alpha" {
+		t.Fatalf("search cancel: searching=%v input=%q query=%q", m.searching, m.input.Value(), m.query)
+	}
+}
+
+func TestKeyReleaseDoesNotTriggerQuit(t *testing.T) {
+	m := newTestModel(t)
+	next, cmd := m.Update(tea.KeyReleaseMsg{Code: 'q'})
+	if cmd != nil {
+		t.Fatalf("key release returned cmd %T", cmd())
+	}
+	if _, ok := next.(Model); !ok {
+		t.Fatalf("key release returned %T", next)
+	}
+}
+
+func TestNewUsesDefaultLimit(t *testing.T) {
+	m := New(Config{}, fakeStore{}, io.Discard)
+	if m.limit != defaultLimit {
+		t.Fatalf("limit = %d want %d", m.limit, defaultLimit)
+	}
+}
+
 func TestSearchInputAndSubmit(t *testing.T) {
 	m := New(Config{Limit: 20}, fakeStore{hits: testHits(), rows: testRows()}, io.Discard)
 	m = apply(t, m, searchMsg{results: testHits()})
@@ -249,14 +290,62 @@ func TestSearchInputAndSubmit(t *testing.T) {
 	}
 }
 
-func TestMatchPreviewFlattensAndHighlights(t *testing.T) {
+func TestStaleSearchResponseIsIgnored(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{}, io.Discard)
+	m.searchSeq = 2
+	m.loading = true
+	m = apply(t, m, searchMsg{seq: 2, results: testHits()[1:2]})
+	if len(m.hits) != 1 || m.hits[0].SessionID != "session-beta" || m.loading {
+		t.Fatalf("current response not applied: hits=%#v loading=%v", m.hits, m.loading)
+	}
+	m = apply(t, m, searchMsg{seq: 1, results: testHits()[:1], err: io.EOF})
+	if len(m.hits) != 1 || m.hits[0].SessionID != "session-beta" || m.err != "" {
+		t.Fatalf("stale response overwrote current state: hits=%#v err=%q", m.hits, m.err)
+	}
+}
+
+func TestStaleShowResponseIsIgnored(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{}, io.Discard)
+	m.showSeq = 2
+	m = apply(t, m, showMsg{seq: 2, sessionID: "session-beta", rows: testRows()["session-beta"]})
+	if m.loadedID != "session-beta" || len(m.detail) != 1 {
+		t.Fatalf("current detail not applied: id=%q rows=%d", m.loadedID, len(m.detail))
+	}
+	m = apply(t, m, showMsg{seq: 1, sessionID: "session-alpha", rows: testRows()["session-alpha"], err: io.EOF})
+	if m.loadedID != "session-beta" || len(m.detail) != 1 || m.err != "" {
+		t.Fatalf("stale detail overwrote current state: id=%q rows=%d err=%q", m.loadedID, len(m.detail), m.err)
+	}
+}
+
+func TestListSelectionInvalidatesPendingShow(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{}, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()})
+	m.showSeq = 1
+	m.moveList(1)
+	m = apply(t, m, showMsg{seq: 1, sessionID: "session-alpha", rows: testRows()["session-alpha"]})
+	if m.loadedID != "" || len(m.detail) != 0 {
+		t.Fatalf("show response survived selection change: id=%q rows=%d", m.loadedID, len(m.detail))
+	}
+}
+
+func TestSearchInvalidatesPendingShow(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{}, io.Discard)
+	m.showSeq = 1
+	_ = m.startSearch()
+	m = apply(t, m, showMsg{seq: 1, sessionID: "session-alpha", rows: testRows()["session-alpha"]})
+	if m.loadedID != "" || len(m.detail) != 0 {
+		t.Fatalf("show response survived new search: id=%q rows=%d", m.loadedID, len(m.detail))
+	}
+}
+
+func TestMatchPreviewFlattensRealWhitespaceAndHighlights(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("CLICOLOR_FORCE", "")
 	hits := []index.SearchResult{{
 		Tool: "codex", SessionID: "session-alpha", Title: "Alpha deploy",
 		Snippets: []string{
-			`con.execute(\"insert into messages values (1, 'hello unique_token')\")\n con.commit()`,
-			`docker compose up\npanic recovered`,
+			"con.execute(`\\n`, \"hello unique_token\")\ncon.commit()",
+			"docker compose up\npanic recovered",
 		},
 		LastUser: "search hello", LastAssistant: "found it",
 	}}
@@ -264,8 +353,11 @@ func TestMatchPreviewFlattensAndHighlights(t *testing.T) {
 	m = apply(t, m, searchMsg{results: hits})
 	m = apply(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	view := ui.StripANSI(m.View().Content)
-	if strings.Contains(view, `\n`) {
-		t.Fatalf("match preview still shows escaped newlines: %q", view)
+	if !strings.Contains(view, `\n`) {
+		t.Fatalf("match preview changed literal escape: %q", view)
+	}
+	if !strings.Contains(view, "con.commit()") {
+		t.Fatalf("real newline was not compacted into preview: %q", view)
 	}
 	if !strings.Contains(view, "hello unique_token") {
 		t.Fatalf("flattened match missing: %q", view)
@@ -309,6 +401,22 @@ func TestMoveAndLoadDetail(t *testing.T) {
 	view := m.View().Content
 	if !strings.Contains(view, "deploy alpha") || !strings.Contains(view, "transcript") {
 		t.Fatalf("detail view missing transcript: %q", view)
+	}
+}
+
+func TestTranscriptPreservesCodeContent(t *testing.T) {
+	rows := []index.ShowRow{{
+		Tool: "codex", SessionID: "session-alpha", Role: "assistant", Timestamp: "now",
+		Text: "if ok {\n\treturn `\\n`\n}",
+	}}
+	store := fakeStore{hits: testHits()[:1], rows: map[string][]index.ShowRow{"session-alpha": rows}}
+	m := New(Config{Limit: 20}, store, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()[:1]})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = applyKey(t, m, "enter")
+	detail := m.detailContent()
+	if !strings.Contains(detail, "if ok {\n\treturn `\\n`\n}") {
+		t.Fatalf("transcript changed code content: %q", detail)
 	}
 }
 
@@ -423,6 +531,57 @@ func TestDetailScrollKeys(t *testing.T) {
 	m = applyKey(t, m, "ctrl+u")
 	if m.viewport.YOffset() >= afterUp {
 		t.Fatalf("ctrl+u did not scroll up: offset=%d before=%d", m.viewport.YOffset(), afterUp)
+	}
+}
+
+func TestListScrollKeysFollowFocus(t *testing.T) {
+	hits := make([]index.SearchResult, 30)
+	for i := range hits {
+		hits[i] = index.SearchResult{Tool: "codex", SessionID: fmt.Sprintf("session-%02d", i), Title: fmt.Sprintf("Session %02d", i)}
+	}
+	m := New(Config{Limit: 40}, fakeStore{hits: hits}, io.Discard)
+	m = apply(t, m, searchMsg{results: hits})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 80, Height: 16})
+	startOffset := m.viewport.YOffset()
+	m = applyKey(t, m, "pgdown")
+	if m.list.Index() <= 0 || m.viewport.YOffset() != startOffset {
+		t.Fatalf("list pgdown: index=%d viewport=%d", m.list.Index(), m.viewport.YOffset())
+	}
+	afterPage := m.list.Index()
+	m = applyKey(t, m, "ctrl+d")
+	if m.list.Index() <= afterPage {
+		t.Fatalf("list half-page down: index=%d after=%d", m.list.Index(), afterPage)
+	}
+	m = applyKey(t, m, "pgup")
+	if m.list.Index() >= afterPage {
+		t.Fatalf("list pgup: index=%d before=%d", m.list.Index(), afterPage)
+	}
+}
+
+func TestMouseWheelFollowsFocus(t *testing.T) {
+	hits := make([]index.SearchResult, 20)
+	for i := range hits {
+		hits[i] = index.SearchResult{Tool: "codex", SessionID: fmt.Sprintf("session-%02d", i), Title: fmt.Sprintf("Session %02d", i)}
+	}
+	m := New(Config{Limit: 40}, fakeStore{hits: hits}, io.Discard)
+	m = apply(t, m, searchMsg{results: hits})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = apply(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.list.Index() == 0 || m.viewport.YOffset() != 0 {
+		t.Fatalf("list wheel: index=%d viewport=%d", m.list.Index(), m.viewport.YOffset())
+	}
+
+	rows := make([]index.ShowRow, 60)
+	for i := range rows {
+		rows[i] = index.ShowRow{Tool: "codex", SessionID: m.selectedHit().SessionID, Role: "assistant", Text: fmt.Sprintf("line %d", i)}
+	}
+	m.showSeq++
+	m = apply(t, m, showMsg{seq: m.showSeq, sessionID: m.selectedHit().SessionID, rows: rows})
+	m.focus = paneDetail
+	listIndex := m.list.Index()
+	m = apply(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.viewport.YOffset() == 0 || m.list.Index() != listIndex {
+		t.Fatalf("detail wheel: index=%d viewport=%d", m.list.Index(), m.viewport.YOffset())
 	}
 }
 
