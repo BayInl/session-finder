@@ -6,7 +6,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/BayInl/session-finder/internal/parsers"
 	"github.com/BayInl/session-finder/internal/record"
 
 	_ "modernc.org/sqlite"
@@ -118,6 +120,50 @@ func TestSearchAndShow(t *testing.T) {
 	want := []ShowRow{{Tool: "codex", SessionID: "session-1", Title: "Question", CWD: "/workspace/project", Created: "2024-01-01T00:00:00Z", Updated: "2024-01-01T00:01:40Z", Role: "user", Timestamp: "2024-01-01T00:00:01Z", Text: "find alpha here"}}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("show rows = %#v, want %#v", rows, want)
+	}
+}
+
+func TestInsertRecordsTruncatesLargeToolResultsRuneSafely(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "tool.result call-1 searchable-needle " + strings.Repeat("界", toolResultTextLimit)
+	_, _, err = insertRecords(tx, func(emit parsers.Emit) error {
+		return emit(record.MessageRecord{
+			Tool: "kimi-code", SessionID: "large-result", Role: "assistant", Text: text, SourcePath: "/source/large",
+		})
+	})
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stored string
+	if err := db.QueryRow("SELECT text FROM messages").Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) > toolResultTextLimit || !strings.HasSuffix(stored, truncatedMarker) || !utf8.ValidString(stored) {
+		t.Fatalf("stored tool result: bytes=%d suffix=%t valid_utf8=%t", len(stored), strings.HasSuffix(stored, truncatedMarker), utf8.ValidString(stored))
+	}
+	results, err := Search(db, "searchable-needle", "", "", "", 20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SessionID != "large-result" {
+		t.Fatalf("search results = %#v, want truncated tool result session", results)
 	}
 }
 
