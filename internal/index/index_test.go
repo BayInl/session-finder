@@ -1,9 +1,13 @@
 package index
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/BayInl/session-finder/internal/record"
 
 	_ "modernc.org/sqlite"
 )
@@ -110,6 +114,42 @@ func TestSearchAndShow(t *testing.T) {
 	want := []ShowRow{{Tool: "codex", SessionID: "session-1", Title: "Question", CWD: "/workspace/project", Created: "2024-01-01T00:00:00Z", Updated: "2024-01-01T00:01:40Z", Role: "user", Timestamp: "2024-01-01T00:00:01Z", Text: "find alpha here"}}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("show rows = %#v, want %#v", rows, want)
+	}
+}
+
+func TestIndexSourcePropagatesGrokMetadataSQLError(t *testing.T) {
+	root := t.TempDir()
+	chatPath := filepath.Join(root, "chat_history.jsonl")
+	summaryPath := filepath.Join(root, "summary.json")
+	if err := os.WriteFile(chatPath, []byte(`{"type":"user","content":"hello"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(summaryPath, []byte(`{"updated_at":"2024-01-01"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(root, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_grok_metadata BEFORE UPDATE OF updated ON sessions
+		BEGIN SELECT RAISE(FAIL, 'metadata rejected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	spec := record.SourceSpec{Tool: "grok", Path: chatPath, AuxiliaryPath: []string{summaryPath}}
+	_, _, err = indexSource(db, spec, 1, 1)
+	if err == nil || !strings.Contains(err.Error(), "metadata rejected") {
+		t.Fatalf("indexSource error = %v, want metadata rejection", err)
+	}
+	var sessions int
+	if err := db.QueryRow("SELECT count(*) FROM sessions").Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 0 {
+		t.Fatalf("sessions after rollback = %d, want 0", sessions)
 	}
 }
 

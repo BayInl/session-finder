@@ -4,7 +4,6 @@ package index
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -455,36 +454,21 @@ func getOrCreateSession(tx *sql.Tx, cache map[string]*sessionState, msg record.M
 	stamp, _ := TimestampEpoch(msg.Timestamp)
 	state := cache[key]
 	if state == nil {
-		var id int64
-		var cwdValue, titleValue sql.NullString
-		var created, updated any
-		err := tx.QueryRow(`SELECT id, cwd, title, created, updated FROM sessions
-			WHERE tool = ? AND session_id = ? AND source_path = ?`, msg.Tool, msg.SessionID, msg.SourcePath).
-			Scan(&id, &cwdValue, &titleValue, &created, &updated)
-		if errors.Is(err, sql.ErrNoRows) {
-			title := msg.Title
-			if title == "" && msg.Role == "user" {
-				title = parsers.TitleFromText(msg.Text, 120)
-			}
-			result, err := tx.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`, msg.Tool, msg.SessionID, msg.CWD, title, timestampValue(stamp), timestampValue(stamp), msg.SourcePath)
-			if err != nil {
-				return 0, err
-			}
-			id, err = result.LastInsertId()
-			if err != nil {
-				return 0, err
-			}
-			state = &sessionState{id: id, cwd: msg.CWD, title: title, created: stamp, updated: stamp}
-			cache[key] = state
-			return id, nil
+		title := msg.Title
+		if title == "" && msg.Role == "user" {
+			title = parsers.TitleFromText(msg.Text, 120)
 		}
+		result, err := tx.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, msg.Tool, msg.SessionID, msg.CWD, title, timestampValue(stamp), timestampValue(stamp), msg.SourcePath)
 		if err != nil {
 			return 0, err
 		}
-		state = &sessionState{id: id, cwd: cwdValue.String, title: titleValue.String,
-			created: sqlFloat(created), updated: sqlFloat(updated)}
-		cache[key] = state
+		id, err := result.LastInsertId()
+		if err != nil {
+			return 0, err
+		}
+		cache[key] = &sessionState{id: id, cwd: msg.CWD, title: title, created: stamp, updated: stamp}
+		return id, nil
 	}
 	previousCWD, previousTitle := state.cwd, state.title
 	previousCreated, previousUpdated := state.created, state.updated
@@ -522,46 +506,41 @@ func sameFloat(left, right *float64) bool {
 
 func insertRecords(tx *sql.Tx, records func(parsers.Emit) error) (int, int, error) {
 	cache := map[string]*sessionState{}
-	batch := make([][4]any, 0, 128)
-	err := records(func(msg record.MessageRecord) error {
-		session, err := getOrCreateSession(tx, cache, msg)
-		if err != nil {
-			return err
-		}
-		stamp, _ := TimestampEpoch(msg.Timestamp)
-		batch = append(batch, [4]any{session, msg.Role, timestampValue(stamp), msg.Text})
-		return nil
-	})
-	if err != nil {
-		return 0, 0, err
-	}
 	stmt, err := tx.Prepare("INSERT INTO messages(session_pk, role, ts, text) VALUES (?, ?, ?, ?)")
 	if err != nil {
 		return 0, 0, err
 	}
 	defer stmt.Close()
-	for _, row := range batch {
-		if _, err := stmt.Exec(row[0], row[1], row[2], row[3]); err != nil {
-			return 0, 0, err
+	messages := 0
+	err = records(func(msg record.MessageRecord) error {
+		session, err := getOrCreateSession(tx, cache, msg)
+		if err != nil {
+			return err
 		}
-	}
-	dirty := make([][5]any, 0, len(cache))
-	for _, state := range cache {
-		if state.dirty {
-			dirty = append(dirty, [5]any{state.cwd, state.title, timestampValue(state.created), timestampValue(state.updated), state.id})
+		stamp, _ := TimestampEpoch(msg.Timestamp)
+		if _, err := stmt.Exec(session, msg.Role, timestampValue(stamp), msg.Text); err != nil {
+			return err
 		}
+		messages++
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
 	}
 	updateStmt, err := tx.Prepare("UPDATE sessions SET cwd = ?, title = ?, created = ?, updated = ? WHERE id = ?")
 	if err != nil {
 		return 0, 0, err
 	}
 	defer updateStmt.Close()
-	for _, row := range dirty {
-		if _, err := updateStmt.Exec(row[0], row[1], row[2], row[3], row[4]); err != nil {
+	for _, state := range cache {
+		if !state.dirty {
+			continue
+		}
+		if _, err := updateStmt.Exec(state.cwd, state.title, timestampValue(state.created), timestampValue(state.updated), state.id); err != nil {
 			return 0, 0, err
 		}
 	}
-	return len(cache), len(batch), nil
+	return len(cache), messages, nil
 }
 
 func upsertSource(tx *sql.Tx, spec record.SourceSpec, mtime float64, size int64) error {
@@ -603,7 +582,10 @@ func indexSource(db *sql.DB, spec record.SourceSpec, mtime float64, size int64) 
 		return 0, 0, err
 	}
 	if spec.Tool == "grok" && len(spec.AuxiliaryPath) > 0 {
-		updateGrokMetadata(tx, spec)
+		if err = updateGrokMetadata(tx, spec); err != nil {
+			_ = tx.Rollback()
+			return 0, 0, err
+		}
 	}
 	if err = upsertSource(tx, spec, mtime, size); err != nil {
 		_ = tx.Rollback()
@@ -615,7 +597,7 @@ func indexSource(db *sql.DB, spec record.SourceSpec, mtime float64, size int64) 
 	return sessions, messages, nil
 }
 
-func updateGrokMetadata(tx *sql.Tx, spec record.SourceSpec) {
+func updateGrokMetadata(tx *sql.Tx, spec record.SourceSpec) error {
 	// The parser already obtains cwd/title/created. Summary updated_at is the
 	// only metadata not present in chat_history records, so merge all fields as
 	// Python does without failing indexing on malformed auxiliary JSON.
@@ -628,10 +610,11 @@ func updateGrokMetadata(tx *sql.Tx, spec record.SourceSpec) {
 	updated, _ := TimestampEpoch(firstNonEmpty(summary["updated_at"], info["updated_at"]))
 	cwd := anyString(firstNonEmpty(summary["cwd"], info["cwd"]))
 	title := anyString(firstNonEmpty(summary["generated_title"], info["generated_title"]))
-	_, _ = tx.Exec(`UPDATE sessions SET created = COALESCE(?, created), updated = COALESCE(?, updated),
+	_, err := tx.Exec(`UPDATE sessions SET created = COALESCE(?, created), updated = COALESCE(?, updated),
 		cwd = CASE WHEN ? <> '' THEN ? ELSE cwd END,
 		title = CASE WHEN ? <> '' THEN ? ELSE title END WHERE source_path = ?`,
 		timestampValue(created), timestampValue(updated), cwd, cwd, title, title, spec.Path)
+	return err
 }
 
 func readSummary(path string) map[string]any {
@@ -640,15 +623,10 @@ func readSummary(path string) map[string]any {
 		return map[string]any{}
 	}
 	var value map[string]any
-	if err := jsonUnmarshal(data, &value); err != nil || value == nil {
+	if err := json.Unmarshal(data, &value); err != nil || value == nil {
 		return map[string]any{}
 	}
 	return value
-}
-
-// jsonUnmarshal is isolated to keep index imports focused and permit testing.
-func jsonUnmarshal(data []byte, value *map[string]any) error {
-	return json.Unmarshal(data, value)
 }
 
 func anyString(value any) string {
@@ -802,13 +780,8 @@ func indexOpencode(db *sql.DB, spec record.SourceSpec, mtime float64, size int64
 
 // Progress is called with total==0 before Discover, then total==len(specs)
 // (done==0), then once per spec (done is 1-based). err is a per-source
-// warning, not fatal. IndexAll does not draw a bar or spinner.
+// warning, not fatal.
 type Progress func(done, total int, spec record.SourceSpec, err error)
-
-// IndexAll builds or incrementally updates the index.
-func IndexAll(full bool, dbPath string) (Summary, error) {
-	return IndexAllWithProgress(full, dbPath, nil)
-}
 
 func IndexAllWithProgress(full bool, dbPath string, progress Progress) (Summary, error) {
 	if dbPath == "" {
@@ -934,21 +907,20 @@ func minInt(left, right int) int {
 
 // SearchResult is an aggregated session search hit.
 type SearchResult struct {
-	Tool         string   `json:"tool"`
-	SessionID    string   `json:"session_id"`
-	Title        string   `json:"title"`
-	CWD          string   `json:"cwd"`
-	Created      string   `json:"created"`
-	Updated      string   `json:"updated"`
+	Tool          string   `json:"tool"`
+	SessionID     string   `json:"session_id"`
+	Title         string   `json:"title"`
+	CWD           string   `json:"cwd"`
+	Created       string   `json:"created"`
+	Updated       string   `json:"updated"`
 	MessageCount  int      `json:"message_count"`
 	Snippets      []string `json:"snippets"`
 	SourcePaths   []string `json:"source_paths"`
 	LastUser      string   `json:"last_user,omitempty"`
 	LastAssistant string   `json:"last_assistant,omitempty"`
-	matchedTerms map[string]bool
-	messageIDs   []int64
-	createdEpoch *float64
-	updatedEpoch *float64
+	matchedTerms  map[string]bool
+	createdEpoch  *float64
+	updatedEpoch  *float64
 }
 
 func containsString(values []string, target string) bool {
