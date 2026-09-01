@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	commandregistry "github.com/BayInl/session-finder/cmd/session-finder/registry"
 	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
@@ -62,7 +63,7 @@ func printVersion(writer io.Writer) {
 }
 
 func printRootUsage() {
-	ui.PrintRootUsage(os.Stdout, Commands(), "Search local AI sessions from opencode, Grok, Codex, Kimi Code, and Claude.")
+	ui.PrintRootUsage(os.Stdout, commandregistry.Names(), "Search local AI sessions from opencode, Grok, Codex, Kimi Code, and Claude.")
 }
 
 func usageError(message string) error {

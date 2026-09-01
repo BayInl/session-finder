@@ -234,9 +234,6 @@ func anyString(value any) string {
 
 func makeRecord(tool string, sessionID, cwd, title, timestamp, role any, text, sourcePath string) (record.MessageRecord, bool) {
 	if text == "" {
-		text = anyString(text)
-	}
-	if text == "" {
 		return record.MessageRecord{}, false
 	}
 	session := strings.TrimSpace(anyString(sessionID))
@@ -365,18 +362,10 @@ func isEmptyValue(value any) bool {
 		return !value
 	case int:
 		return value == 0
-	case int32:
-		return value == 0
 	case int64:
-		return value == 0
-	case float32:
 		return value == 0
 	case float64:
 		return value == 0
-	case sql.NullString:
-		return !value.Valid || value.String == ""
-	case sql.NullInt64:
-		return !value.Valid || value.Int64 == 0
 	}
 	return false
 }

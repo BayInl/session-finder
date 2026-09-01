@@ -184,10 +184,6 @@ func printInstalledHook(path string) {
 }
 
 func installHooks(tool string) ([]string, error) {
-	tool = strings.ToLower(strings.TrimSpace(tool))
-	if tool != hookToolClaude && tool != hookToolKimi && tool != hookToolOpenCode && tool != hookToolAll {
-		return nil, fmt.Errorf("invalid tool %q (want claude, kimi, opencode, or all)", tool)
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("find home directory: %w", err)
@@ -259,7 +255,7 @@ func opencodePluginPath(home string) string {
 
 func installClaudeHook(home string) (string, error) {
 	path := claudeSettingsPath(home)
-	changed, err := updateJSONFile(path, func(root map[string]any) (bool, error) {
+	if err := updateJSONFile(path, func(root map[string]any) (bool, error) {
 		hooks, err := objectField(root, "hooks")
 		if err != nil {
 			return false, err
@@ -288,11 +284,9 @@ func installClaudeHook(home string) (string, error) {
 		})
 		hooks["SessionEnd"] = groups
 		return true, nil
-	})
-	if err != nil {
+	}); err != nil {
 		return "", err
 	}
-	_ = changed
 	return path, nil
 }
 
@@ -336,10 +330,10 @@ func containsHookCommand(value any) bool {
 	return false
 }
 
-func updateJSONFile(path string, update func(map[string]any) (bool, error)) (bool, error) {
+func updateJSONFile(path string, update func(map[string]any) (bool, error)) error {
 	data, mode, err := readConfigFile(path)
 	if err != nil {
-		return false, err
+		return err
 	}
 	root := map[string]any{}
 	if len(bytes.TrimSpace(data)) > 0 {
@@ -347,27 +341,24 @@ func updateJSONFile(path string, update func(map[string]any) (bool, error)) (boo
 		decoder.UseNumber()
 		var decoded any
 		if err := decoder.Decode(&decoded); err != nil {
-			return false, fmt.Errorf("parse %s: %w", path, err)
+			return fmt.Errorf("parse %s: %w", path, err)
 		}
 		var ok bool
 		root, ok = decoded.(map[string]any)
 		if !ok || root == nil {
-			return false, fmt.Errorf("parse %s: top-level JSON value must be an object", path)
+			return fmt.Errorf("parse %s: top-level JSON value must be an object", path)
 		}
 	}
 	changed, err := update(root)
 	if err != nil || !changed {
-		return changed, err
+		return err
 	}
 	encoded, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return false, fmt.Errorf("encode %s: %w", path, err)
+		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	encoded = append(encoded, '\n')
-	if err := writeConfigFile(path, encoded, mode); err != nil {
-		return false, err
-	}
-	return true, nil
+	return writeConfigFile(path, encoded, mode)
 }
 
 func installKimiHook(home string) (string, error) {
