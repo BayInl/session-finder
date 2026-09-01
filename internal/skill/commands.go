@@ -11,6 +11,7 @@ import (
 	"database/sql"
 
 	commandregistry "github.com/BayInl/session-finder/cmd/session-finder/registry"
+	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/extract"
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/llm"
@@ -24,7 +25,7 @@ func init() {
 	commandregistry.Register("skill", RunCommand)
 }
 
-// RunCommand dispatches `session-finder skill ...` subcommands.
+// RunCommand dispatches `sfind skill ...` subcommands.
 func RunCommand(argv []string) error {
 	if len(argv) == 0 || argv[0] == "--help" || argv[0] == "-h" {
 		printSkillUsage()
@@ -54,7 +55,7 @@ func Commands() []string {
 }
 
 func printSkillUsage() {
-	ui.PrintUsage(os.Stdout, "usage: session-finder skill <extract|review|publish|disable|delete|list> [flags]", "", nil, nil)
+	ui.PrintUsage(os.Stdout, brand.Usage("skill <extract|review|publish|disable|delete|list> [flags]"), "", nil, nil)
 }
 
 func runExtract(argv []string) error {
@@ -70,7 +71,7 @@ func runExtract(argv []string) error {
 	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
 	judgeLimit := set.Int("judge-limit", 0, "maximum candidate judge calls (0 means unlimited)")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder skill extract [flags]", "Extract skill candidates from sessions.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("skill extract [flags]"), "Extract skill candidates from sessions.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"session", "cwd", "after", "pending"}},
 		{Title: "Judge", Names: []string{"judge", "judge-limit"}},
 		{Title: "Output", Names: []string{"json"}},
@@ -151,7 +152,7 @@ func runReview(argv []string) error {
 	trigger := set.String("trigger", "", "replacement trigger for edit")
 	instructions := set.String("instructions", "", "replacement instructions for edit")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder skill review <id> [flags]", "Review a skill candidate.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("skill review <id> [flags]"), "Review a skill candidate.", []ui.FlagGroup{
 		{Title: "Review", Names: []string{"action", "evidence", "note", "slug", "trigger", "instructions"}},
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db"}},
@@ -184,7 +185,7 @@ func runPublish(argv []string) error {
 	project := set.String("project", "", "project directory for --target project")
 	root := set.String("skills-root", "", "explicit skills root override")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder skill publish <id> [flags]", "Publish an approved skill candidate.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("skill publish <id> [flags]"), "Publish an approved skill candidate.", []ui.FlagGroup{
 		{Title: "Publish", Names: []string{"target", "home", "project", "skills-root"}},
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db"}},
@@ -209,7 +210,7 @@ func runDisable(argv []string) error {
 	set.SetOutput(os.Stderr)
 	dbPath := set.String("db", "", "path to the candidate SQLite database")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder skill disable <id> [flags]", "Disable a skill candidate.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("skill disable <id> [flags]"), "Disable a skill candidate.", []ui.FlagGroup{
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db"}},
 	})
@@ -231,7 +232,7 @@ func runDelete(argv []string) error {
 	set.SetOutput(os.Stderr)
 	dbPath := set.String("db", "", "path to the candidate SQLite database")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder skill delete <id> [flags]", "Delete a skill candidate.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("skill delete <id> [flags]"), "Delete a skill candidate.", []ui.FlagGroup{
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db"}},
 	})
@@ -254,7 +255,7 @@ func runList(argv []string) error {
 	dbPath := set.String("db", "", "path to the candidate SQLite database")
 	status := set.String("status", "", "candidate status filter")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder skill list [flags]", "List skill candidates.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("skill list [flags]"), "List skill candidates.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"status"}},
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db"}},

@@ -2,13 +2,13 @@
 # session-finder managed hook: queue new sessions without delaying the host.
 # Hook stdin is intentionally ignored; host lifecycle payloads are not needed.
 
-command -v session-finder >/dev/null 2>&1 || exit 0
+command -v sfind >/dev/null 2>&1 || command -v session-finder >/dev/null 2>&1 || exit 0
 
 # Run in a detached child so the host can exit immediately. The lock lives in
 # that child, not in this short-lived wrapper, and stale owners are reclaimed
 # only after their process is gone and the lock is at least ten minutes old.
 nohup sh -c '
-  command -v session-finder >/dev/null 2>&1 || exit 0
+  sf_bin=$(command -v sfind 2>/dev/null || command -v session-finder 2>/dev/null) || exit 0
   umask 077
   lock_dir="${TMPDIR:-/tmp}/session-finder-extract.lock"
   lock_owner="$lock_dir/owner"
@@ -76,6 +76,6 @@ nohup sh -c '
   }
   trap cleanup 0
   trap "exit 0" HUP INT TERM
-  session-finder skill extract --pending >/dev/null 2>&1
+  "$sf_bin" skill extract --pending >/dev/null 2>&1
 ' >/dev/null 2>&1 </dev/null &
 exit 0

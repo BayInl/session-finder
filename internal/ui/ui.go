@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BayInl/session-finder/internal/brand"
 	"golang.org/x/term"
 )
 
@@ -145,13 +146,13 @@ func PrintError(w io.Writer, err error) {
 // PrintVersion writes version metadata. Non-color output is byte-stable.
 func PrintVersion(w io.Writer, version, commit, date string) {
 	if !ColorEnabled(w) {
-		fmt.Fprintf(w, "session-finder version %s\ncommit: %s\ndate: %s\n", version, commit, date)
+		fmt.Fprintf(w, "%s version %s\ncommit: %s\ndate: %s\n", brand.Name, version, commit, date)
 		return
 	}
 	theme := NewTheme(w)
 	muted := theme.Style(TokenMuted)
-	fmt.Fprintf(w, "session-finder version %s\n%s %s\n%s %s\n",
-		version, muted.Render("commit:"), commit, muted.Render("date:"), date)
+	fmt.Fprintf(w, "%s version %s\n%s %s\n%s %s\n",
+		brand.Name, version, muted.Render("commit:"), commit, muted.Render("date:"), date)
 }
 
 // LegacySGR wraps value in SGR when ColorEnabled(w). Used by the main-package colorText wrapper.

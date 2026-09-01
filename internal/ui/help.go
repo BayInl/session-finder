@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/BayInl/session-finder/internal/brand"
 )
 
 // AttachUsage replaces the FlagSet Usage with grouped --flag help.
@@ -139,7 +141,7 @@ func PrintRootUsage(w io.Writer, commands []string, blurb string) {
 		}
 		joined = strings.Join(parts, "|")
 	}
-	fmt.Fprintf(w, "usage: session-finder <%s> [flags]\n", joined)
+	fmt.Fprintf(w, "usage: %s <%s> [flags]\n", brand.Name, joined)
 	if blurb != "" {
 		fmt.Fprintln(w, blurb)
 	}

@@ -222,7 +222,7 @@ func TestPrintErrorPipeUnchanged(t *testing.T) {
 func TestPrintVersionNonTTY(t *testing.T) {
 	var buf bytes.Buffer
 	PrintVersion(&buf, "v1.2.3", "abc123", "2026-08-31T10:11:12Z")
-	want := "session-finder version v1.2.3\ncommit: abc123\ndate: 2026-08-31T10:11:12Z\n"
+	want := "sfind version v1.2.3\ncommit: abc123\ndate: 2026-08-31T10:11:12Z\n"
 	if buf.String() != want {
 		t.Fatalf("PrintVersion = %q", buf.String())
 	}
@@ -278,7 +278,7 @@ func TestPrintUsageShowsNonZeroDefaults(t *testing.T) {
 	set.Bool("json", false, "emit JSON")
 	set.String("db", "", "path to the SQLite index database")
 	var buf bytes.Buffer
-	PrintUsage(&buf, "usage: session-finder search <query> [flags]", "Search indexed session transcripts.", set, []FlagGroup{
+	PrintUsage(&buf, "usage: sfind search <query> [flags]", "Search indexed session transcripts.", set, []FlagGroup{
 		{Title: "Filter", Names: []string{"limit"}},
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db"}},

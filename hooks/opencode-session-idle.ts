@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process"
 
 const extractionCommand = `
-command -v session-finder >/dev/null 2>&1 || exit 0
+sf_bin=$(command -v sfind 2>/dev/null || command -v session-finder 2>/dev/null) || exit 0
 umask 077
 lock_dir="\${TMPDIR:-/tmp}/session-finder-extract.lock"
 lock_owner="$lock_dir/owner"
@@ -70,7 +70,7 @@ cleanup() {
 }
 trap cleanup 0
 trap "exit 0" HUP INT TERM
-session-finder skill extract --pending >/dev/null 2>&1
+"$sf_bin" skill extract --pending >/dev/null 2>&1
 `
 
 export const SessionFinderPlugin = async () => ({

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	commandregistry "github.com/BayInl/session-finder/cmd/session-finder/registry"
+	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/llm"
 	"github.com/BayInl/session-finder/internal/record"
@@ -43,7 +44,7 @@ func RunCommand(argv []string) error {
 }
 
 func printUsage(writer io.Writer) {
-	ui.PrintUsage(writer, "usage: session-finder decisions <extract|list|review> [flags]",
+	ui.PrintUsage(writer, brand.Usage("decisions <extract|list|review> [flags]"),
 		"  extract [--session ID] [--db PATH] [--judge off|auto|on] [--judge-limit N] [--json]\n  list [--json] [--status STATUS] [--session ID] [--db PATH]\n  review [--db PATH] [--id ID] [--action approve|reject|defer|edit]",
 		nil, nil)
 }
@@ -56,7 +57,7 @@ func runExtract(writer io.Writer, argv []string) error {
 	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
 	judgeLimit := set.Int("judge-limit", 0, "maximum candidate judge calls (0 means unlimited)")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder decisions extract [flags]", "Extract decision candidates from sessions.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("decisions extract [flags]"), "Extract decision candidates from sessions.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"session"}},
 		{Title: "Judge", Names: []string{"judge", "judge-limit"}},
 		{Title: "Output", Names: []string{"json"}},
@@ -124,7 +125,7 @@ func runList(writer io.Writer, argv []string) error {
 	dbPath := set.String("db", "", "path to SQLite index database")
 	limit := set.Int("limit", 0, "maximum decisions to show")
 	asJSON := set.Bool("json", false, "emit JSON")
-	ui.AttachUsage(set, "usage: session-finder decisions list [flags]", "List recorded decisions.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("decisions list [flags]"), "List recorded decisions.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"status", "session", "limit"}},
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db"}},
@@ -177,7 +178,7 @@ func runReview(reader io.Reader, writer io.Writer, argv []string) error {
 	actor := set.String("actor", "reviewer", "audit actor")
 	reason := set.String("reason", "", "audit reason")
 	confirmed := set.Bool("confirm", false, "confirm an edit")
-	ui.AttachUsage(set, "usage: session-finder decisions review [flags]", "Review a recorded decision.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("decisions review [flags]"), "Review a recorded decision.", []ui.FlagGroup{
 		{Title: "Review", Names: []string{"id", "action", "actor", "reason", "confirm"}},
 		{Title: "Database", Names: []string{"db"}},
 	})

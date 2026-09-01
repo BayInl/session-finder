@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/ui"
 )
 
@@ -21,7 +22,7 @@ const (
 	hookToolOpenCode = "opencode"
 	hookToolAll      = "all"
 
-	hookMarker = "session-finder skill extract --pending"
+	hookMarker = "skill extract --pending"
 
 	claudeHookTimeout = 3
 	kimiHookTimeout   = 1
@@ -30,7 +31,7 @@ const (
 // hookLockBody is deliberately POSIX sh so it can run from all supported host
 // hooks. The owner file makes a lock left by a killed process reclaimable after
 // ten minutes, while a live owner always wins over the age check.
-const hookLockBody = `command -v session-finder >/dev/null 2>&1 || exit 0
+const hookLockBody = `sf_bin=$(command -v sfind 2>/dev/null || command -v session-finder 2>/dev/null) || exit 0
 umask 077
 lock_dir="${TMPDIR:-/tmp}/session-finder-extract.lock"
 lock_owner="$lock_dir/owner"
@@ -98,7 +99,7 @@ cleanup() {
 }
 trap cleanup 0
 trap "exit 0" HUP INT TERM
-session-finder skill extract --pending >/dev/null 2>&1
+"$sf_bin" skill extract --pending >/dev/null 2>&1
 `
 
 // Keep this command detached from hosts that may wait for hook commands. The
@@ -147,14 +148,14 @@ func runHooks(argv []string) error {
 }
 
 func printHooksUsage(writer io.Writer) {
-	ui.PrintUsage(writer, "usage: session-finder hooks install [--tool claude|kimi|opencode|all]", "", nil, nil)
+	ui.PrintUsage(writer, brand.Usage("hooks install [--tool claude|kimi|opencode|all]"), "", nil, nil)
 }
 
 func runHooksInstall(argv []string) error {
 	set := flag.NewFlagSet("hooks install", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	tool := set.String("tool", hookToolAll, "tool to configure: claude, kimi, opencode, or all")
-	ui.AttachUsage(set, "usage: session-finder hooks install [flags]", "Install session-idle extraction hooks.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("hooks install [flags]"), "Install session-idle extraction hooks.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"tool"}},
 	})
 	if err := ui.Parse(set, argv); err != nil {

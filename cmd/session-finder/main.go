@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
 	"github.com/BayInl/session-finder/internal/tui"
@@ -73,7 +74,7 @@ func runIndex(argv []string) error {
 	set.SetOutput(os.Stderr)
 	full := set.Bool("full", false, "rebuild the index from scratch")
 	dbPath := set.String("db", "", "path to the SQLite index database")
-	ui.AttachUsage(set, "usage: session-finder index [flags]", "Build or incrementally update the local session index.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("index [flags]"), "Build or incrementally update the local session index.", []ui.FlagGroup{
 		{Title: "Index", Names: []string{"full"}},
 		{Title: "Database", Names: []string{"db"}},
 	})
@@ -111,7 +112,7 @@ func runSearch(argv []string) error {
 	set.BoolVar(&includeSystem, "include-system", false, "alias for --all")
 	verbose := set.Bool("verbose", false, "show full result cards")
 	dbPath := set.String("db", "", "path to the SQLite index database")
-	ui.AttachUsage(set, "usage: session-finder search <query> [flags]", "Search indexed session transcripts.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("search <query> [flags]"), "Search indexed session transcripts.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"tool", "cwd", "after", "all", "include-system", "limit"}},
 		{Title: "Output", Names: []string{"json", "plain", "verbose"}},
 		{Title: "Database", Names: []string{"db"}},
@@ -165,7 +166,7 @@ func runShow(argv []string) error {
 	role := set.String("role", "", "filter by role (user, assistant, or system)")
 	limit := set.Int("limit", 0, "maximum messages to show")
 	dbPath := set.String("db", "", "path to the SQLite index database")
-	ui.AttachUsage(set, "usage: session-finder show <session-id> [flags]", "Show messages from a session.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("show <session-id> [flags]"), "Show messages from a session.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"role", "limit"}},
 		{Title: "Database", Names: []string{"db"}},
 	})

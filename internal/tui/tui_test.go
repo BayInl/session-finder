@@ -412,7 +412,7 @@ func TestViewRespectsWidth(t *testing.T) {
 		if got := ui.DisplayWidth(firstLine(content)); got > width {
 			t.Fatalf("width %d: first line width %d: %q", width, got, firstLine(content))
 		}
-		if !strings.Contains(content, "session-finder") || !strings.Contains(content, "sessions") {
+		if !strings.Contains(content, "sfind") || !strings.Contains(content, "sessions") {
 			t.Fatalf("width %d missing chrome: %q", width, content)
 		}
 		if !strings.Contains(content, "Alpha deploy") {

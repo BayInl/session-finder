@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/record"
 	"github.com/BayInl/session-finder/internal/ui"
 )
@@ -77,7 +78,7 @@ func (m Model) View() tea.View {
 	v := tea.NewView(body)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	v.WindowTitle = "session-finder"
+	v.WindowTitle = brand.Name
 	return v
 }
 
@@ -115,7 +116,7 @@ func (m Model) renderStatus(width int) string {
 	}
 	chips := m.toolChips()
 	line := strings.Join([]string{
-		primary.Render("session-finder"),
+		primary.Render(brand.Name),
 		muted.Render("query"),
 		query,
 		count,
@@ -268,7 +269,7 @@ func (m Model) renderHelp() string {
 		box = box.BorderForeground(lipgloss.Color(m.theme.Palette.Primary))
 	}
 	body := strings.Join([]string{
-		m.theme.Style(ui.TokenPrimary).Render("session-finder keys"),
+		m.theme.Style(ui.TokenPrimary).Render(brand.Name + " keys"),
 		"",
 		m.help.FullHelpView(m.keys.FullHelp()),
 		"",

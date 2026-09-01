@@ -1,8 +1,10 @@
-# session-finder
+# sfind
 
-`session-finder` indexes and searches local AI coding-session transcripts from
-opencode, Grok, Codex, Kimi Code, and Claude. It stores a rebuildable SQLite
-FTS5 index under `~/.cache/session-finder/index.db`.
+`sfind` (short for session-finder) indexes and searches local AI coding-session
+transcripts from opencode, Grok, Codex, Kimi Code, and Claude. It stores a
+rebuildable SQLite FTS5 index under `~/.cache/session-finder/index.db`.
+
+The old `session-finder` command name still works as an alias.
 
 ## Install with Homebrew
 
@@ -20,7 +22,7 @@ Requirements: Go 1.25 or newer.
 ```sh
 git clone https://github.com/BayInl/session-finder.git
 cd session-finder
-go build -o session-finder ./cmd/session-finder
+go build -o sfind ./cmd/session-finder
 ```
 
 To install the binary into your Go bin directory instead:
@@ -31,24 +33,33 @@ go install github.com/BayInl/session-finder/cmd/session-finder@latest
 
 ## Usage
 
+On a terminal, `sfind` with no arguments opens a full-screen browser. Search
+inside it with `/`, or pass a query:
+
+```sh
+sfind
+sfind search "deployment"
+sfind search "deployment" --plain
+```
+
 Build or update the local index:
 
 ```sh
-session-finder index
+sfind index
 ```
 
 Rebuild it from scratch:
 
 ```sh
-session-finder index --full
+sfind index --full
 ```
 
 Search indexed messages:
 
 ```sh
-session-finder search "deployment"
-session-finder search "SQLite" --tool codex --limit 10
-session-finder search "error" --json
+sfind search "deployment"
+sfind search "SQLite" --tool codex --limit 10
+sfind search "error" --json
 ```
 
 ### Query syntax
@@ -75,33 +86,33 @@ present). Colors follow `NO_COLOR`; column width adapts to the terminal.
 Show the message stream for a full session ID or unique ID prefix:
 
 ```sh
-session-finder show SESSION_ID
-session-finder show SESSION_ID --role assistant --limit 20
+sfind show SESSION_ID
+sfind show SESSION_ID --role assistant --limit 20
 ```
 
 Show the build version, commit, and build date:
 
 ```sh
-session-finder --version
-session-finder version
+sfind --version
+sfind version
 ```
 
 ## Automatic session-end extraction hooks
 
-`session-finder` can queue new skill candidates when a host session ends. The
+`sfind` can queue new skill candidates when a host session ends. The
 hook only starts the existing incremental `skill extract --pending` scan; it
-does not upload transcript data, and it returns immediately. If the
-`session-finder` binary is not on `PATH`, the hook exits silently. Repeating the
+does not upload transcript data, and it returns immediately. If neither
+`sfind` nor `session-finder` is on `PATH`, the hook exits silently. Repeating the
 installation is safe: existing configuration and an already-installed hook
 are left unchanged.
 
 Install one host or all supported hosts:
 
 ```sh
-session-finder hooks install --tool claude
-session-finder hooks install --tool kimi
-session-finder hooks install --tool opencode
-session-finder hooks install --tool all
+sfind hooks install --tool claude
+sfind hooks install --tool kimi
+sfind hooks install --tool opencode
+sfind hooks install --tool all
 ```
 
 The installer updates these user-level locations:
@@ -145,15 +156,15 @@ for OpenCode. Leave other hook entries and unrelated configuration intact.
 
 ## Decision ledger
 
-`session-finder` can mine indexed sessions for the *why* behind decisions —
+`sfind` can mine indexed sessions for the *why* behind decisions —
 options considered, the chosen one, and the rationale — with every record
 backed by an exact quote from the original transcript.
 
 ```sh
-session-finder decisions extract              # scan sessions for decision candidates
-session-finder decisions list                 # review queue
-session-finder decisions list --json
-session-finder decisions review               # approve / reject / defer / edit each candidate
+sfind decisions extract              # scan sessions for decision candidates
+sfind decisions list                 # review queue
+sfind decisions list --json
+sfind decisions review               # approve / reject / defer / edit each candidate
 ```
 
 Nothing is recorded until you approve it: candidates start as drafts, every
@@ -166,10 +177,10 @@ Successful sessions can be distilled into reusable skills following the
 [Agent Skills](https://agentskills.io/) open format:
 
 ```sh
-session-finder skill extract --pending        # scan new sessions for skill candidates
-session-finder skill review                   # approve / reject / defer / edit / split evidence blocks
-session-finder skill publish                  # write approved skills to ~/.agents/skills
-session-finder skill list
+sfind skill extract --pending        # scan new sessions for skill candidates
+sfind skill review                   # approve / reject / defer / edit / split evidence blocks
+sfind skill publish                  # write approved skills to ~/.agents/skills
+sfind skill list
 ```
 
 Quality gates suppress one-off or low-evidence sessions automatically, and
@@ -182,12 +193,12 @@ leaves the machine.
 For all options, run:
 
 ```sh
-session-finder --help
-session-finder search --help
-session-finder show --help
-session-finder decisions --help
-session-finder skill --help
-session-finder hooks --help
+sfind --help
+sfind search --help
+sfind show --help
+sfind decisions --help
+sfind skill --help
+sfind hooks --help
 ```
 
 ## Supported sources

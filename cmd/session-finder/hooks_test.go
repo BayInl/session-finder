@@ -21,7 +21,7 @@ func TestPrintVersionFormat(t *testing.T) {
 
 	var output bytes.Buffer
 	printVersion(&output)
-	want := "session-finder version v1.2.3\ncommit: abc123\ndate: 2026-08-31T10:11:12Z\n"
+	want := "sfind version v1.2.3\ncommit: abc123\ndate: 2026-08-31T10:11:12Z\n"
 	if output.String() != want {
 		t.Fatalf("printVersion() = %q, want %q", output.String(), want)
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/BayInl/session-finder/internal/brand"
 	"github.com/BayInl/session-finder/internal/tui"
 	"github.com/BayInl/session-finder/internal/ui"
 )
@@ -39,7 +40,7 @@ func parseTUIArgs(argv []string) (tui.Config, bool, error) {
 	var includeSystem bool
 	set.BoolVar(&includeSystem, "all", false, "include system/noise records (default hides them)")
 	set.BoolVar(&includeSystem, "include-system", false, "alias for --all")
-	ui.AttachUsage(set, "usage: session-finder tui [query] [flags]", "Browse indexed sessions in a full-screen TUI.", []ui.FlagGroup{
+	ui.AttachUsage(set, brand.Usage("tui [query] [flags]"), "Browse indexed sessions in a full-screen TUI.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"tool", "cwd", "after", "all", "include-system", "limit"}},
 		{Title: "Database", Names: []string{"db"}},
 	})
