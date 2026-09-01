@@ -45,6 +45,7 @@ release:
     name: session-finder
   prerelease: auto
 
+# brews is deprecated but still supported; defer homebrew_casks until tap_migrations.json, README --cask, and quarantine handling are coordinated.
 brews:
   - name: session-finder
     ids:

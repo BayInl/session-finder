@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 
@@ -23,6 +24,11 @@ import (
 
 var (
 	DefaultIndexPath = filepath.Join(userHome(), ".cache", "session-finder", "index.db")
+)
+
+const (
+	toolResultTextLimit = 12 * 1024
+	truncatedMarker     = "…[truncated]"
 )
 
 const ftsTriggersSQL = `
@@ -507,6 +513,19 @@ func sameFloat(left, right *float64) bool {
 	return *left == *right
 }
 
+func indexMessageText(text string) string {
+	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+	isToolResult := trimmed == "tool.result" || strings.HasPrefix(trimmed, "tool.result ")
+	if !isToolResult || len(text) <= toolResultTextLimit {
+		return text
+	}
+	limit := toolResultTextLimit - len(truncatedMarker)
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit] + truncatedMarker
+}
+
 func insertRecords(tx *sql.Tx, records func(parsers.Emit) error) (int, int, error) {
 	cache := map[string]*sessionState{}
 	stmt, err := tx.Prepare("INSERT INTO messages(session_pk, role, ts, text) VALUES (?, ?, ?, ?)")
@@ -521,7 +540,7 @@ func insertRecords(tx *sql.Tx, records func(parsers.Emit) error) (int, int, erro
 			return err
 		}
 		stamp, _ := TimestampEpoch(msg.Timestamp)
-		if _, err := stmt.Exec(session, msg.Role, timestampValue(stamp), msg.Text); err != nil {
+		if _, err := stmt.Exec(session, msg.Role, timestampValue(stamp), indexMessageText(msg.Text)); err != nil {
 			return err
 		}
 		messages++

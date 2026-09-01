@@ -44,7 +44,7 @@ func TestBuildCandidateUsesExtractSignalsAndEvidencePointers(t *testing.T) {
 	if bundle.Quality.Disposition != QualityDraft {
 		t.Fatalf("quality = %+v", bundle.Quality)
 	}
-	if !IsValidSlug(bundle.Slug) || bundle.SessionID != "session-1" {
+	if bundle.Slug != "document-the-release-workflow" || bundle.SessionID != "session-1" {
 		t.Fatalf("bundle metadata = %+v", bundle)
 	}
 	if len(bundle.Evidence) < 2 {
@@ -52,6 +52,45 @@ func TestBuildCandidateUsesExtractSignalsAndEvidencePointers(t *testing.T) {
 	}
 	if strings.Contains(bundle.Instructions, "Looks good") {
 		t.Fatalf("instructions unexpectedly contain reviewer evidence: %q", bundle.Instructions)
+	}
+}
+
+func TestBuildCandidateUsesHashSlugForCJKTitle(t *testing.T) {
+	messages := []record.MessageRecord{
+		{Tool: "codex", SessionID: "cjk-session", Title: "发布流程", Role: "user", Text: "记录发布流程。"},
+		{Tool: "codex", SessionID: "cjk-session", Title: "发布流程", Role: "assistant", Text: "运行 go test ./... 然后构建。"},
+	}
+	bundle, err := BuildCandidate(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(bundle.Slug, "skill-") || len(bundle.Slug) != len("skill-")+8 || !IsValidSlug(bundle.Slug) {
+		t.Fatalf("CJK slug = %q, want skill-<8 hex chars>", bundle.Slug)
+	}
+}
+
+func TestExtractAndPersistNumbersDuplicateCJKSlugs(t *testing.T) {
+	store, err := extract.Open(filepath.Join(t.TempDir(), "candidates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	messages := func(sessionID string) []record.MessageRecord {
+		return []record.MessageRecord{
+			{Tool: "codex", SessionID: sessionID, Title: "发布流程", Role: "user", Text: "记录发布流程。"},
+			{Tool: "codex", SessionID: sessionID, Title: "发布流程", Role: "assistant", Text: "运行 go test ./... 然后构建。"},
+		}
+	}
+	first, _, err := ExtractAndPersist(context.Background(), store, messages("session-1"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := ExtractAndPersist(context.Background(), store, messages("session-2"), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(first.Slug, "skill-") || second.Slug != first.Slug+"-2" {
+		t.Fatalf("duplicate CJK slugs = %q, %q", first.Slug, second.Slug)
 	}
 }
 

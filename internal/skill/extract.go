@@ -2,7 +2,9 @@ package skill
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -64,16 +66,7 @@ func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractO
 	if title == "" {
 		title = "session skill"
 	}
-	slug := slugify(title)
-	if slug == "" {
-		slug = slugify(signals.IntentKind + " workflow")
-	}
-	if slug == "" {
-		slug = "session-skill"
-	}
-	if len(slug) > 64 {
-		slug = strings.Trim(slug[:64], "-")
-	}
+	slug := skillSlug(title, clean)
 	trigger := triggerFromMessages(clean, signals.IntentKind)
 	bundle := CandidateBundle{
 		Slug:         slug,
@@ -111,6 +104,25 @@ func firstNonEmptyString(messages []record.MessageRecord, getter func(record.Mes
 		}
 	}
 	return ""
+}
+
+func skillSlug(title string, messages []record.MessageRecord) string {
+	slug := slugify(title)
+	if len(slug) < 3 {
+		hash := sha256.New()
+		_, _ = hash.Write([]byte(title))
+		for _, message := range messages {
+			_, _ = hash.Write([]byte{0})
+			_, _ = hash.Write([]byte(message.Role))
+			_, _ = hash.Write([]byte{0})
+			_, _ = hash.Write([]byte(message.Text))
+		}
+		slug = "skill-" + hex.EncodeToString(hash.Sum(nil)[:4])
+	}
+	if len(slug) > 64 {
+		slug = strings.Trim(slug[:64], "-")
+	}
+	return slug
 }
 
 func triggerFromMessages(messages []record.MessageRecord, intent string) string {
@@ -162,6 +174,10 @@ func ExtractAndPersistWithOptions(ctx context.Context, store *extract.Store, mes
 	if bundle.SessionID == "" && len(messages) > 0 {
 		bundle.SessionID = messages[0].SessionID
 	}
+	bundle, err = withUniqueCandidateSlug(ctx, store, bundle)
+	if err != nil {
+		return bundle, extract.Candidate{}, err
+	}
 	payload, payloadErr := CandidatePayload(bundle)
 	if payloadErr != nil {
 		return bundle, extract.Candidate{}, payloadErr
@@ -194,6 +210,33 @@ func ExtractAndPersistWithOptions(ctx context.Context, store *extract.Store, mes
 		return bundle, extract.Candidate{}, createErr
 	}
 	return bundle, candidate, nil
+}
+
+func withUniqueCandidateSlug(ctx context.Context, store *extract.Store, bundle CandidateBundle) (CandidateBundle, error) {
+	candidates, err := store.List(ctx, extract.ListOptions{Kind: defaultCandidateKind, IncludeDeleted: true})
+	if err != nil {
+		return bundle, err
+	}
+	used := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		existing, decodeErr := BundleFromCandidate(candidate)
+		if decodeErr == nil && existing.Slug != "" {
+			used[existing.Slug] = true
+		}
+	}
+	if !used[bundle.Slug] {
+		return bundle, nil
+	}
+	base := bundle.Slug
+	for sequence := 2; ; sequence++ {
+		suffix := fmt.Sprintf("-%d", sequence)
+		limit := 64 - len(suffix)
+		candidateSlug := strings.Trim(base[:min(len(base), limit)], "-") + suffix
+		if !used[candidateSlug] {
+			bundle.Slug = candidateSlug
+			return bundle, nil
+		}
+	}
 }
 
 // persistSkippedSession records a session that contains only filtered/system
