@@ -10,6 +10,7 @@ import (
 
 	"github.com/BayInl/session-finder/internal/index"
 	"github.com/BayInl/session-finder/internal/record"
+	"github.com/BayInl/session-finder/internal/tui"
 	"github.com/BayInl/session-finder/internal/ui"
 )
 
@@ -28,6 +29,9 @@ func main() {
 
 func run(argv []string) error {
 	if len(argv) == 0 {
+		if tui.ShouldLaunch(os.Stdout) {
+			return launchTUI(tui.Config{})
+		}
 		return usageError("missing command")
 	}
 	if argv[0] == "-h" || argv[0] == "--help" {
@@ -101,6 +105,7 @@ func runSearch(argv []string) error {
 	after := set.String("after", "", "only messages on or after YYYY-MM-DD")
 	limit := set.Int("limit", 20, "maximum sessions to show")
 	asJSON := set.Bool("json", false, "emit JSON")
+	asPlain := set.Bool("plain", false, "print results instead of opening the TUI")
 	var includeSystem bool
 	set.BoolVar(&includeSystem, "all", false, "include system/noise records (default hides them)")
 	set.BoolVar(&includeSystem, "include-system", false, "alias for --all")
@@ -108,7 +113,7 @@ func runSearch(argv []string) error {
 	dbPath := set.String("db", "", "path to the SQLite index database")
 	ui.AttachUsage(set, "usage: session-finder search <query> [flags]", "Search indexed session transcripts.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"tool", "cwd", "after", "all", "include-system", "limit"}},
-		{Title: "Output", Names: []string{"json", "verbose"}},
+		{Title: "Output", Names: []string{"json", "plain", "verbose"}},
 		{Title: "Database", Names: []string{"db"}},
 	})
 	query, helpRequested, err := parseFlagsAndArg(set, argv, "search")
@@ -123,6 +128,12 @@ func runSearch(argv []string) error {
 	}
 	if *limit <= 0 {
 		return usageError("limit must be positive")
+	}
+	if wantsTUI(*asJSON, *asPlain) {
+		return launchTUI(tui.Config{
+			Query: query, Tool: *tool, CWD: *cwd, After: *after,
+			Limit: *limit, DBPath: *dbPath, IncludeSystem: includeSystem,
+		})
 	}
 	db, err := index.Open(*dbPath)
 	if err != nil {

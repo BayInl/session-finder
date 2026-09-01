@@ -120,6 +120,18 @@ func TestSearchJSONUnchanged(t *testing.T) {
 	if !strings.Contains(empty, `"results": []`) {
 		t.Fatalf("empty results JSON = %s", empty)
 	}
+
+	plain := captureStdout(t, func() {
+		if err := runSearch([]string{"alpha", "--plain", "--db", path}); err != nil {
+			t.Errorf("runSearch --plain: %v", err)
+		}
+	})
+	if strings.Contains(plain, "\x1b") {
+		t.Fatalf("--plain leaked ANSI: %s", plain)
+	}
+	if !strings.Contains(plain, "1. [codex] session-1 |") {
+		t.Fatalf("--plain compact line missing: %s", plain)
+	}
 }
 
 func TestSkillListTSVHasNoHeader(t *testing.T) {

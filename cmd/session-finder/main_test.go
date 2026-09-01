@@ -83,6 +83,54 @@ func TestParseFlagsAndArgReportsHelp(t *testing.T) {
 	}
 }
 
+func TestRunNoArgsNonTTYMissingCommand(t *testing.T) {
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	err = run(nil)
+	_ = writer.Close()
+	os.Stdout = original
+	_, _ = io.ReadAll(reader)
+	_ = reader.Close()
+	if err == nil || !strings.Contains(err.Error(), "missing command") {
+		t.Fatalf("run(nil) on pipe = %v", err)
+	}
+}
+
+func TestRunTUIRequiresTTY(t *testing.T) {
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	err = runTUI(nil)
+	_ = writer.Close()
+	os.Stdout = original
+	_, _ = io.ReadAll(reader)
+	_ = reader.Close()
+	if err == nil || !strings.Contains(err.Error(), "tui requires a TTY") {
+		t.Fatalf("runTUI on pipe = %v", err)
+	}
+}
+
+func TestParseTUIArgsOptionalQuery(t *testing.T) {
+	cfg, helpRequested, err := parseTUIArgs([]string{"--limit", "5", "alpha", "--tool", "codex"})
+	if err != nil || helpRequested {
+		t.Fatalf("err=%v help=%v", err, helpRequested)
+	}
+	if cfg.Query != "alpha" || cfg.Tool != "codex" || cfg.Limit != 5 {
+		t.Fatalf("cfg = %#v", cfg)
+	}
+	cfg, helpRequested, err = parseTUIArgs(nil)
+	if err != nil || helpRequested || cfg.Query != "" {
+		t.Fatalf("empty argv cfg=%#v help=%v err=%v", cfg, helpRequested, err)
+	}
+}
+
 func TestRunShowRejectsExplicitNonPositiveLimit(t *testing.T) {
 	for _, args := range [][]string{
 		{"session", "--limit", "0"},

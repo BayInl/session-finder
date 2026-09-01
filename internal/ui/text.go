@@ -128,19 +128,33 @@ func cutWidth(s string, max int) (head, rest string) {
 		return s, ""
 	}
 	width := 0
+	cut := len(s)
 	for i, runeValue := range s {
 		w := cellWidth(runeValue)
 		if width+w > max {
-			return s[:i], s[i:]
+			cut = i
+			break
 		}
 		width += w
 	}
-	return s, ""
+	head, rest = s[:cut], s[cut:]
+	if idx := strings.LastIndexByte(head, ' '); idx >= 1 {
+		if DisplayWidth(head[:idx]) >= max/2 {
+			return head[:idx], strings.TrimSpace(head[idx+1:] + rest)
+		}
+	}
+	return head, rest
 }
 
 func wrapLines(s string, width, maxLines int) []string {
 	s = PlainField(s)
-	if s == "" || s == "-" || maxLines <= 0 {
+	if s == "" || s == "-" {
+		return nil
+	}
+	if maxLines == 0 {
+		maxLines = 1 << 20
+	}
+	if maxLines < 0 {
 		return nil
 	}
 	if width < 8 {
@@ -161,6 +175,11 @@ func wrapLines(s string, width, maxLines int) []string {
 		rest = strings.TrimSpace(next)
 	}
 	return lines
+}
+
+// WrapLines wraps plain text to width display cells. maxLines 0 means no cap.
+func WrapLines(s string, width, maxLines int) []string {
+	return wrapLines(s, width, maxLines)
 }
 
 func PlainField(s string) string {

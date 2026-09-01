@@ -146,19 +146,17 @@ func writeLastRound(w io.Writer, hit SearchHit, query string, theme Theme, match
 }
 
 func writeWrappedRole(w io.Writer, role, text, query string, roleStyle, match lipgloss.Style, width, maxLines int) {
-	label := roleStyle.Render(role) + ": "
-	pad := DisplayWidth(role) + 2
-	if pad < 6 {
-		pad = 6
-	}
-	indent := strings.Repeat(" ", pad)
-	budget := maxInt(16, width-pad)
+	prefix := "  " + role + ": "
+	pad := DisplayWidth(prefix)
+	budget := maxInt(8, width-pad)
 	lines := wrapLines(text, budget, maxLines)
 	if len(lines) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "  %s%s\n", label, Highlight(lines[0], query, match))
+	label := "  " + roleStyle.Render(role) + ": "
+	indent := strings.Repeat(" ", pad)
+	fmt.Fprintln(w, label+Highlight(lines[0], query, match))
 	for _, line := range lines[1:] {
-		fmt.Fprintf(w, "  %s%s\n", indent, Highlight(line, query, match))
+		fmt.Fprintln(w, indent+Highlight(line, query, match))
 	}
 }

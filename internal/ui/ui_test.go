@@ -141,6 +141,37 @@ func TestWriteLastRoundShowsUserAndAssistant(t *testing.T) {
 	}
 }
 
+func TestWriteLastRoundDoesNotOverflowWidth(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("CLICOLOR_FORCE", "")
+	width := 80
+	longASCII := strings.Repeat("abcdefghij ", 40)
+	longCJK := strings.Repeat("中文测试内容宽度检查", 20)
+	var buf bytes.Buffer
+	theme := NewTheme(&buf)
+	writeLastRound(&buf, SearchHit{LastUser: longASCII, LastAssistant: longCJK}, "ab", theme, theme.Style(TokenPrimary), width, 8)
+	for i, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if DisplayWidth(line) > width {
+			t.Fatalf("line %d width %d > %d: %q", i, DisplayWidth(line), width, line)
+		}
+	}
+}
+
+func TestWrapLinesBreaksOnSpace(t *testing.T) {
+	lines := wrapLines("Connection closed by UNKNOWN port 65535 extra", 24, 4)
+	if len(lines) < 2 {
+		t.Fatalf("expected wrap: %#v", lines)
+	}
+	for _, line := range lines {
+		if DisplayWidth(line) > 24 {
+			t.Fatalf("over-wide %q", line)
+		}
+		if strings.HasPrefix(line, "osed") || strings.HasPrefix(line, "tion") {
+			t.Fatalf("mid-word leftover %q in %#v", line, lines)
+		}
+	}
+}
+
 func TestRenderShowPipeStable(t *testing.T) {
 	t.Setenv("CLICOLOR_FORCE", "")
 	var buf bytes.Buffer

@@ -7,7 +7,8 @@ import (
 
 const lastRoundMaxRunes = 2000
 
-func attachLastRounds(db *sql.DB, results []SearchResult) error {
+// AttachLastRounds fills LastUser and LastAssistant from the newest non-noise messages.
+func AttachLastRounds(db *sql.DB, results []SearchResult) error {
 	if db == nil || len(results) == 0 {
 		return nil
 	}

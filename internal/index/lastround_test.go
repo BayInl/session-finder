@@ -27,7 +27,7 @@ func TestAttachLastRoundsUsesNewestUserAndAssistant(t *testing.T) {
 		t.Fatal(err)
 	}
 	results := []SearchResult{{Tool: "codex", SessionID: "session-1"}}
-	if err := attachLastRounds(db, results); err != nil {
+	if err := AttachLastRounds(db, results); err != nil {
 		t.Fatal(err)
 	}
 	if results[0].LastUser != "latest user" || results[0].LastAssistant != "latest assistant" {
@@ -56,7 +56,7 @@ func TestAttachLastRoundsSkipsToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	results := []SearchResult{{Tool: "kimi-code", SessionID: "session-2"}}
-	if err := attachLastRounds(db, results); err != nil {
+	if err := AttachLastRounds(db, results); err != nil {
 		t.Fatal(err)
 	}
 	if results[0].LastUser != "how do we polish the CLI?" || results[0].LastAssistant != "use lipgloss for TTY output" {

@@ -24,6 +24,7 @@ func init() {
 	RegisterCommand("index", runIndex)
 	RegisterCommand("search", runSearch)
 	RegisterCommand("show", runShow)
+	RegisterCommand("tui", runTUI)
 	RegisterCommand("version", runVersion)
 	decisions.RegisterCommand()
 }
