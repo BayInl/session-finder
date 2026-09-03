@@ -66,14 +66,15 @@ type Model struct {
 	input    textinput.Model
 	help     help.Model
 
-	focus       pane
-	searching   bool
-	showHelp    bool
-	loadedID    string
-	detail      []ui.ShowMessage
-	detailIndex int
-	copyStatus  string
-	copySeq     uint64
+	focus            pane
+	searching        bool
+	showHelp         bool
+	loadedID         string
+	detail           []ui.ShowMessage
+	detailIndex      int
+	detailHeaderLine int
+	copyStatus       string
+	copySeq          uint64
 }
 
 // New constructs a TUI model. Size messages are not required; tests pass fake sizes via Update.
@@ -94,7 +95,7 @@ func New(cfg Config, store Backend, w io.Writer) Model {
 	}
 	m := Model{
 		store:     store,
-		clipboard: newSystemClipboard(w),
+		clipboard: newSystemClipboard(),
 		theme:     theme,
 		color:     color,
 		keys:      newKeyMap(),
@@ -199,6 +200,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailIndex = 0
 		m.refreshDetail()
 		return m, nil
+
+	case clipboardResultMsg:
+		if msg.seq != m.copySeq {
+			return m, nil
+		}
+		m.setCopyStatus(msg.chars, msg.truncated, msg.err)
+		return m, m.clearCopyStatusCmd(msg.seq)
 
 	case clearCopyStatusMsg:
 		if msg.seq == m.copySeq {
@@ -535,33 +543,46 @@ func (m Model) paneSizes() (leftW, rightW, midH int) {
 }
 
 func (m *Model) refreshDetail() {
-	content := m.detailContent()
+	content, headerLine := m.detailContentWithHeaderLine()
+	m.detailHeaderLine = headerLine
 	m.viewport.SetContent(content)
 	m.viewport.GotoTop()
-	if !m.hasLoadedDetail() || m.detailIndex == 0 {
+	if !m.hasLoadedDetail() || m.detailIndex == 0 || headerLine < 0 {
 		return
 	}
-	for line, value := range strings.Split(content, "\n") {
-		if strings.HasPrefix(ui.StripANSI(value), "▸ ") {
-			m.viewport.SetYOffset(maxInt(0, line-m.viewport.Height()/2))
-			return
-		}
-	}
+	m.viewport.SetYOffset(maxInt(0, headerLine-m.viewport.Height()/2))
 }
 
 func (m Model) copyText(text string) (tea.Model, tea.Cmd) {
 	if m.clipboard == nil || text == "" {
 		return m, nil
 	}
-	copied, err := m.clipboard.Copy(text)
 	m.copySeq++
+	seq := m.copySeq
+	plan := m.clipboard.Copy(text, seq)
+	if plan.cmd == nil {
+		return m, nil
+	}
+	if plan.async {
+		return m, plan.cmd
+	}
+	m.setCopyStatus(plan.chars, plan.truncated, nil)
+	return m, tea.Sequence(plan.cmd, m.clearCopyStatusCmd(seq))
+}
+
+func (m *Model) setCopyStatus(chars int, truncated bool, err error) {
 	if err != nil {
 		m.copyStatus = "copy failed: " + err.Error()
-	} else {
-		m.copyStatus = "copied " + fmt.Sprint(copied) + " chars"
+		return
 	}
-	seq := m.copySeq
-	return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+	m.copyStatus = "copied " + fmt.Sprint(chars) + " chars"
+	if truncated {
+		m.copyStatus += " (truncated)"
+	}
+}
+
+func (m Model) clearCopyStatusCmd(seq uint64) tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
 		return clearCopyStatusMsg{seq: seq}
 	})
 }

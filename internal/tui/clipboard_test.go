@@ -1,41 +1,17 @@
 package tui
 
 import (
-	"bytes"
-	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
-func TestOSC52Sequence(t *testing.T) {
-	sequence, chars, truncated := osc52Sequence("hello 世界", maxOSC52Bytes)
-	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("hello 世界")) + "\x07"
-	if sequence != want {
-		t.Fatalf("sequence = %q want %q", sequence, want)
-	}
-	if chars != 8 || truncated {
-		t.Fatalf("chars=%d truncated=%v", chars, truncated)
-	}
-}
-
-func TestOSC52SequenceTruncatesOnUTF8Boundary(t *testing.T) {
-	sequence, chars, truncated := osc52Sequence("ab世界", 5)
-	wantPayload := "ab世"
-	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(wantPayload)) + "\x07"
-	if sequence != want {
-		t.Fatalf("sequence = %q want %q", sequence, want)
-	}
-	if chars != 3 || !truncated {
-		t.Fatalf("chars=%d truncated=%v", chars, truncated)
-	}
-}
-
-func TestSystemClipboardPrefersOSC52(t *testing.T) {
-	var out bytes.Buffer
+func TestSystemClipboardUsesTeaSetClipboard(t *testing.T) {
 	pbcopyCalled := false
 	clipboard := systemClipboard{
-		out:      &out,
 		term:     "xterm-kitty",
 		goos:     "darwin",
 		maxBytes: maxOSC52Bytes,
@@ -44,22 +20,39 @@ func TestSystemClipboardPrefersOSC52(t *testing.T) {
 			return nil
 		},
 	}
-	copied, err := clipboard.Copy("hello")
-	if err != nil {
-		t.Fatal(err)
+	plan := clipboard.Copy("hello 世界", 7)
+	if plan.async || plan.chars != 8 || plan.truncated || plan.cmd == nil {
+		t.Fatalf("plan = %#v", plan)
 	}
-	if copied != 5 || pbcopyCalled {
-		t.Fatalf("copied=%d pbcopyCalled=%v", copied, pbcopyCalled)
+	msg := plan.cmd()
+	if _, raw := msg.(tea.RawMsg); raw {
+		t.Fatalf("clipboard must not use tea.Raw: %T", msg)
 	}
-	if !strings.HasPrefix(out.String(), "\x1b]52;c;") {
-		t.Fatalf("output = %q", out.String())
+	if got := fmt.Sprint(msg); got != "hello 世界" {
+		t.Fatalf("clipboard payload = %q", got)
+	}
+	if !strings.Contains(fmt.Sprintf("%T", msg), "setClipboardMsg") {
+		t.Fatalf("command returned %T, want bubbletea setClipboardMsg", msg)
+	}
+	if pbcopyCalled {
+		t.Fatal("OSC52 path called pbcopy")
 	}
 }
 
-func TestSystemClipboardFallsBackToPBCopy(t *testing.T) {
+func TestSystemClipboardTruncatesOnUTF8Boundary(t *testing.T) {
+	clipboard := systemClipboard{term: "xterm-256color", goos: "linux", maxBytes: 5}
+	plan := clipboard.Copy("ab世界", 1)
+	if plan.chars != 3 || !plan.truncated {
+		t.Fatalf("chars=%d truncated=%v", plan.chars, plan.truncated)
+	}
+	if got := fmt.Sprint(plan.cmd()); got != "ab世" {
+		t.Fatalf("clipboard payload = %q", got)
+	}
+}
+
+func TestSystemClipboardFallsBackToPBCopyCmd(t *testing.T) {
 	var got string
 	clipboard := systemClipboard{
-		out:      &bytes.Buffer{},
 		term:     "linux",
 		goos:     "darwin",
 		maxBytes: maxOSC52Bytes,
@@ -68,37 +61,24 @@ func TestSystemClipboardFallsBackToPBCopy(t *testing.T) {
 			return nil
 		},
 	}
-	copied, err := clipboard.Copy("fallback 世界")
-	if err != nil {
-		t.Fatal(err)
+	plan := clipboard.Copy("fallback 世界", 9)
+	if !plan.async || plan.cmd == nil || got != "" {
+		t.Fatalf("fallback plan=%#v text=%q", plan, got)
 	}
-	if copied != 11 || got != "fallback 世界" {
-		t.Fatalf("copied=%d text=%q", copied, got)
+	msg, ok := plan.cmd().(clipboardResultMsg)
+	if !ok {
+		t.Fatalf("fallback command returned %T", plan.cmd())
 	}
-}
-
-func TestSystemClipboardFallsBackAfterOSC52WriteFailure(t *testing.T) {
-	var got string
-	clipboard := systemClipboard{
-		out:      failingWriter{},
-		term:     "xterm-256color",
-		goos:     "darwin",
-		maxBytes: maxOSC52Bytes,
-		pbcopy: func(text string) error {
-			got = text
-			return nil
-		},
-	}
-	if _, err := clipboard.Copy("fallback"); err != nil {
-		t.Fatal(err)
-	}
-	if got != "fallback" {
-		t.Fatalf("pbcopy text = %q", got)
+	if msg.seq != 9 || msg.chars != 11 || msg.truncated || msg.err != nil || got != "fallback 世界" {
+		t.Fatalf("result=%#v text=%q", msg, got)
 	}
 }
 
-type failingWriter struct{}
-
-func (failingWriter) Write([]byte) (int, error) {
-	return 0, errors.New("write failed")
+func TestSystemClipboardReportsUnsupported(t *testing.T) {
+	clipboard := systemClipboard{term: "dumb", goos: "linux", maxBytes: maxOSC52Bytes}
+	plan := clipboard.Copy("hello", 3)
+	msg, ok := plan.cmd().(clipboardResultMsg)
+	if !ok || msg.seq != 3 || !errors.Is(msg.err, errClipboardUnsupported) {
+		t.Fatalf("result = %#v", msg)
+	}
 }
