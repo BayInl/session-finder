@@ -17,6 +17,8 @@ type keyMap struct {
 	PageDown  key.Binding
 	HalfUp    key.Binding
 	HalfDown  key.Binding
+	Yank      key.Binding
+	YankAll   key.Binding
 	Help      key.Binding
 }
 
@@ -36,12 +38,14 @@ func newKeyMap() keyMap {
 		PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll")),
 		HalfUp:    key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u/d", "scroll")),
 		HalfDown:  key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "scroll")),
+		Yank:      key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy message")),
+		YankAll:   key.NewBinding(key.WithKeys("Y"), key.WithHelp("Y", "copy transcript")),
 		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	}
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Search, k.Up, k.Load, k.Back, k.Focus, k.ToolCycle, k.Help, k.Quit}
+	return []key.Binding{k.Search, k.Up, k.Load, k.Yank, k.YankAll, k.Back, k.Focus, k.ToolCycle, k.Help, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
@@ -49,6 +53,6 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Search, k.Up, k.Down, k.Load, k.Back},
 		{k.Focus, k.ToolCycle, k.Top, k.Bottom},
 		{k.PageUp, k.PageDown, k.HalfUp, k.HalfDown},
-		{k.Help, k.Quit},
+		{k.Yank, k.YankAll, k.Help, k.Quit},
 	}
 }

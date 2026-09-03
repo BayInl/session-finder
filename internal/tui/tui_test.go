@@ -20,6 +20,16 @@ type fakeStore struct {
 	rows map[string][]index.ShowRow
 }
 
+type fakeClipboard struct {
+	texts []string
+	err   error
+}
+
+func (f *fakeClipboard) Copy(text string) (int, error) {
+	f.texts = append(f.texts, text)
+	return len([]rune(text)), f.err
+}
+
 func (f fakeStore) Search(query, tool string, limit int) ([]index.SearchResult, error) {
 	out := make([]index.SearchResult, 0, len(f.hits))
 	q := strings.ToLower(strings.TrimSpace(query))
@@ -430,6 +440,69 @@ func TestTranscriptPreservesCodeContent(t *testing.T) {
 	detail := m.detailContent()
 	if !strings.Contains(detail, "if ok {\n\treturn `\\n`\n}") {
 		t.Fatalf("transcript changed code content: %q", detail)
+	}
+}
+
+func TestYankSelectedMessageAndTranscript(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{hits: testHits()[:1], rows: testRows()}, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()[:1]})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = applyKey(t, m, "enter")
+	clipboard := &fakeClipboard{}
+	m.clipboard = clipboard
+
+	m = applyKey(t, m, "j")
+	if m.detailIndex != 1 {
+		t.Fatalf("detail index = %d want 1", m.detailIndex)
+	}
+	next, cmd := m.Update(keyPress("y"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("y should schedule status clear")
+	}
+	if len(clipboard.texts) != 1 || clipboard.texts[0] != "ok" {
+		t.Fatalf("message copies = %#v", clipboard.texts)
+	}
+	if m.copyStatus != "copied 2 chars" {
+		t.Fatalf("copy status = %q", m.copyStatus)
+	}
+
+	next, cmd = m.Update(keyPress("Y"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("Y should schedule status clear")
+	}
+	want := "user:\ndeploy alpha\n\nassistant:\nok"
+	if len(clipboard.texts) != 2 || clipboard.texts[1] != want {
+		t.Fatalf("transcript copies = %#v", clipboard.texts)
+	}
+	if !strings.Contains(m.renderStatus(120), "copied 33 chars") {
+		t.Fatalf("status bar = %q", m.renderStatus(120))
+	}
+}
+
+func TestYankOnlyDispatchesInLoadedDetail(t *testing.T) {
+	m := newTestModel(t)
+	clipboard := &fakeClipboard{}
+	m.clipboard = clipboard
+	m = applyKey(t, m, "y")
+	m = applyKey(t, m, "Y")
+	if len(clipboard.texts) != 0 {
+		t.Fatalf("unexpected copies = %#v", clipboard.texts)
+	}
+}
+
+func TestCopyStatusIgnoresStaleClear(t *testing.T) {
+	m := newTestModel(t)
+	m.copyStatus = "copied 3 chars"
+	m.copySeq = 2
+	m = apply(t, m, clearCopyStatusMsg{seq: 1})
+	if m.copyStatus == "" {
+		t.Fatal("stale clear removed status")
+	}
+	m = apply(t, m, clearCopyStatusMsg{seq: 2})
+	if m.copyStatus != "" {
+		t.Fatalf("current clear left status %q", m.copyStatus)
 	}
 }
 

@@ -100,6 +100,9 @@ func (m Model) renderStatus(width int) string {
 	theme := m.theme
 	primary := theme.Style(ui.TokenPrimary)
 	muted := theme.Style(ui.TokenMuted)
+	if m.copyStatus != "" {
+		return clipLine(primary.Render(brand.Name)+"  "+m.copyStatus, width)
+	}
 	query := m.query
 	if m.searching {
 		query = m.input.View()
@@ -251,7 +254,11 @@ func (m Model) detailContent() string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "%s %s\n", muted.Render("["+row.Timestamp+"]"), m.theme.Role(row.Role).Render(row.Role))
+		cursor := " "
+		if i == m.detailIndex {
+			cursor = "▸"
+		}
+		fmt.Fprintf(&b, "%s %s %s\n", cursor, muted.Render("["+row.Timestamp+"]"), m.theme.Role(row.Role).Render(row.Role))
 		for _, line := range ui.WrapTextLines(row.Text, wrapW) {
 			b.WriteString(ui.HighlightTerms(line, terms, match))
 			b.WriteByte('\n')
