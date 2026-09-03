@@ -1,6 +1,8 @@
 package index
 
 import (
+	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -123,48 +125,143 @@ func TestSearchAndShow(t *testing.T) {
 	}
 }
 
-func TestInsertRecordsTruncatesLargeToolResultsRuneSafely(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "index.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := InitializeSchema(db); err != nil {
-		t.Fatal(err)
-	}
+func TestInsertRecordsTruncatesLargeMessagesFromEveryParser(t *testing.T) {
+	for _, tool := range record.Tools {
+		t.Run(tool, func(t *testing.T) {
+			root := t.TempDir()
+			needle := "searchable" + strings.ReplaceAll(tool, "-", "")
+			text := needle + " " + strings.Repeat("界", messageTextLimit)
+			spec, sessionID, role := largeMessageSource(t, root, tool, text)
 
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := "tool.result call-1 searchable-needle " + strings.Repeat("界", toolResultTextLimit)
-	_, _, err = insertRecords(tx, func(emit parsers.Emit) error {
-		return emit(record.MessageRecord{
-			Tool: "kimi-code", SessionID: "large-result", Role: "assistant", Text: text, SourcePath: "/source/large",
+			db, err := Open(filepath.Join(root, "index.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := InitializeSchema(db); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = insertRecords(tx, func(emit parsers.Emit) error {
+				return parsers.Parse(spec, emit)
+			})
+			if err != nil {
+				_ = tx.Rollback()
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+
+			var stored, storedRole string
+			if err := db.QueryRow("SELECT role, text FROM messages").Scan(&storedRole, &stored); err != nil {
+				t.Fatal(err)
+			}
+			if storedRole != role {
+				t.Fatalf("stored role = %q, want %q", storedRole, role)
+			}
+			if len(stored) > messageTextLimit || !strings.HasSuffix(stored, truncatedMarker) || !utf8.ValidString(stored) {
+				t.Fatalf("stored message: bytes=%d suffix=%t valid_utf8=%t", len(stored), strings.HasSuffix(stored, truncatedMarker), utf8.ValidString(stored))
+			}
+			results, err := Search(db, needle, tool, "", "", 20, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 1 || results[0].SessionID != sessionID {
+				t.Fatalf("search results = %#v, want truncated %s session %q", results, tool, sessionID)
+			}
 		})
-	})
-	if err != nil {
-		_ = tx.Rollback()
-		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	var stored string
-	if err := db.QueryRow("SELECT text FROM messages").Scan(&stored); err != nil {
+func TestIndexMessageTextBoundary(t *testing.T) {
+	unchanged := strings.Repeat("a", messageTextLimit)
+	if got := indexMessageText(unchanged); got != unchanged {
+		t.Fatalf("message at limit changed: bytes=%d", len(got))
+	}
+	for _, role := range []string{"user", "assistant", "system"} {
+		text := role + " " + strings.Repeat("界", messageTextLimit)
+		got := indexMessageText(text)
+		if len(got) > messageTextLimit || !strings.HasSuffix(got, truncatedMarker) || !utf8.ValidString(got) {
+			t.Fatalf("%s message: bytes=%d suffix=%t valid_utf8=%t", role, len(got), strings.HasSuffix(got, truncatedMarker), utf8.ValidString(got))
+		}
+	}
+}
+
+func largeMessageSource(t *testing.T, root, tool, text string) (record.SourceSpec, string, string) {
+	t.Helper()
+	switch tool {
+	case "opencode":
+		path := filepath.Join(root, "opencode.db")
+		db, err := sql.Open("sqlite", dbURI(path, false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(`CREATE TABLE session(id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_updated INTEGER);
+CREATE TABLE message(id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+CREATE TABLE part(id TEXT PRIMARY KEY, message_id TEXT, time_created INTEGER, data TEXT);
+INSERT INTO session VALUES ('session-opencode', '/workspace', '', 1);
+INSERT INTO message VALUES ('message-opencode', 'session-opencode', 1, '{"role":"user"}');
+INSERT INTO part VALUES ('part-opencode', 'message-opencode', 1, ?)`, mustJSONText(text)); err != nil {
+			t.Fatal(err)
+		}
+		return record.SourceSpec{Tool: tool, Path: path}, "session-opencode", "user"
+	case "grok":
+		path := filepath.Join(root, "session-grok", "chat_history.jsonl")
+		writeIndexJSONL(t, path, map[string]any{"type": "assistant", "content": text})
+		return record.SourceSpec{Tool: tool, Path: path}, "session-grok", "assistant"
+	case "codex":
+		path := filepath.Join(root, "codex.jsonl")
+		writeIndexJSONL(t, path,
+			map[string]any{"type": "session_meta", "payload": map[string]any{"id": "session-codex"}},
+			map[string]any{"type": "message", "payload": map[string]any{"type": "message", "role": "tool", "content": text}},
+		)
+		return record.SourceSpec{Tool: tool, Path: path}, "session-codex", "system"
+	case "kimi-code":
+		path := filepath.Join(root, "session_kimi", "agents", "agent_a", "wire.jsonl")
+		writeIndexJSONL(t, path, map[string]any{
+			"type":  "context.append_loop_event",
+			"event": map[string]any{"type": "tool.result", "toolCallId": "call-kimi", "result": map[string]any{"output": text}},
+		})
+		return record.SourceSpec{Tool: tool, Path: path}, "session_kimi", "assistant"
+	case "claude":
+		path := filepath.Join(root, "claude.jsonl")
+		writeIndexJSONL(t, path, map[string]any{
+			"type": "user", "sessionId": "session-claude", "message": map[string]any{"role": "user", "content": text},
+		})
+		return record.SourceSpec{Tool: tool, Path: path}, "session-claude", "user"
+	default:
+		t.Fatalf("unsupported tool %q", tool)
+		return record.SourceSpec{}, "", ""
+	}
+}
+
+func writeIndexJSONL(t *testing.T, path string, values ...map[string]any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if len(stored) > toolResultTextLimit || !strings.HasSuffix(stored, truncatedMarker) || !utf8.ValidString(stored) {
-		t.Fatalf("stored tool result: bytes=%d suffix=%t valid_utf8=%t", len(stored), strings.HasSuffix(stored, truncatedMarker), utf8.ValidString(stored))
+	var lines []byte
+	for _, value := range values {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, data...)
+		lines = append(lines, '\n')
 	}
-	results, err := Search(db, "searchable-needle", "", "", "", 20, false)
-	if err != nil {
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || results[0].SessionID != "large-result" {
-		t.Fatalf("search results = %#v, want truncated tool result session", results)
-	}
+}
+
+func mustJSONText(text string) string {
+	data, _ := json.Marshal(map[string]string{"text": text})
+	return string(data)
 }
 
 func TestSourceSignatureIncludesDerivedGrokSummary(t *testing.T) {
