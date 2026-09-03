@@ -3,11 +3,16 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/BayInl/session-finder/internal/fault"
 )
 
 func TestDefaultIsOfflineAndDoesNotCallNetwork(t *testing.T) {
@@ -212,4 +217,204 @@ func TestValidateJSONSchemaRejectsTrailingAndSupportsNestedStrictFields(t *testi
 func jsonString(value string) string {
 	data, _ := json.Marshal(value)
 	return string(data)
+}
+
+func TestNewFromEnvOfflineAndAutoPromote(t *testing.T) {
+	t.Setenv("SESSION_FINDER_LLM_PROVIDER", "")
+	t.Setenv("LLM_PROVIDER", "")
+	t.Setenv("SESSION_FINDER_LLM_BASE_URL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("LLM_BASE_URL", "")
+	t.Setenv("SESSION_FINDER_LLM_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("LLM_API_KEY", "")
+	t.Setenv("CLIRELAY_API_KEY", "")
+	t.Setenv("SESSION_FINDER_LLM_MODEL", "")
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("LLM_MODEL", "")
+	client, err := NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsOffline(client) {
+		t.Fatalf("empty env client %T", client)
+	}
+
+	t.Setenv("OPENAI_BASE_URL", "https://example.test/v1")
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	t.Setenv("OPENAI_MODEL", "unit-model")
+	client, err = NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsOffline(client) {
+		t.Fatal("complete OpenAI tuple should promote online")
+	}
+
+	t.Setenv("LLM_PROVIDER", "anthropic")
+	_, err = NewFromEnv()
+	if !errors.Is(err, ErrInvalidProvider) {
+		t.Fatalf("invalid provider error = %v", err)
+	}
+	if fault.KindOf(err) != fault.KindConfig {
+		t.Fatalf("kind = %q", fault.KindOf(err))
+	}
+
+	t.Setenv("LLM_PROVIDER", "openai")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("SESSION_FINDER_LLM_API_KEY", "")
+	t.Setenv("LLM_API_KEY", "")
+	_, err = NewFromEnv()
+	if !errors.Is(err, ErrMissingAPIKey) {
+		t.Fatalf("missing key error = %v", err)
+	}
+}
+
+func TestOfflineRejectsCustomSchema(t *testing.T) {
+	client := NewOffline()
+	_, err := client.Complete(context.Background(), CompletionRequest{
+		Schema: json.RawMessage(`{"type":"object"}`),
+	})
+	if !errors.Is(err, ErrOfflineUnsupported) {
+		t.Fatalf("custom schema error = %v", err)
+	}
+	if _, err := client.Complete(context.Background(), CompletionRequest{Schema: SignalSchema()}); err != nil {
+		t.Fatalf("signal schema error = %v", err)
+	}
+}
+
+func TestIsOfflineNilAndOpenAI(t *testing.T) {
+	if !IsOffline(nil) {
+		t.Fatal("nil client should be offline")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsOffline(client) {
+		t.Fatal("openai client must not report offline")
+	}
+}
+
+func TestOpenAIRetriesThenSucceeds(t *testing.T) {
+	oldSleep := sleep
+	sleep = func(time.Duration) {}
+	defer func() { sleep = oldSleep }()
+
+	var hits atomic.Int32
+	ok := `{"choices":[{"message":{"content":"{\"intent_kind\":\"workflow\",\"confidence\":0.8,\"success_evidence\":[\"acceptance\"],\"one_off_risk\":0.1,\"secret_risk\":0,\"recommended_action\":\"draft\"}"}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"slow down"}`))
+			return
+		}
+		_, _ = w.Write([]byte(ok))
+	}))
+	defer server.Close()
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", Model: "m", MaxRetries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(context.Background(), CompletionRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("hits = %d", hits.Load())
+	}
+}
+
+func TestOpenAIDoesNotRetryClientErrors(t *testing.T) {
+	oldSleep := sleep
+	sleep = func(time.Duration) {}
+	defer func() { sleep = oldSleep }()
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"bad schema"}`))
+	}))
+	defer server.Close()
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = mustCompleteErr(t, client)
+	var api *APIError
+	if !errors.As(err, &api) || api.StatusCode != http.StatusBadRequest {
+		t.Fatalf("error = %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("hits = %d", hits.Load())
+	}
+}
+
+func TestOpenAIFallsBackToJSONObject(t *testing.T) {
+	oldSleep := sleep
+	sleep = func(time.Duration) {}
+	defer func() { sleep = oldSleep }()
+
+	var hits atomic.Int32
+	ok := `{"choices":[{"message":{"content":"{\"intent_kind\":\"workflow\",\"confidence\":0.8,\"success_evidence\":[\"acceptance\"],\"one_off_risk\":0.1,\"secret_risk\":0,\"recommended_action\":\"draft\"}"}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		n := hits.Add(1)
+		if n == 1 {
+			if !strings.Contains(string(body), "json_schema") {
+				t.Errorf("first request should use json_schema: %s", body)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"response_format json_schema is not supported"}`))
+			return
+		}
+		if !strings.Contains(string(body), `"json_object"`) {
+			t.Errorf("second request should use json_object: %s", body)
+		}
+		_, _ = w.Write([]byte(ok))
+	}))
+	defer server.Close()
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", Model: "m", MaxRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(context.Background(), CompletionRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("hits = %d", hits.Load())
+	}
+}
+
+func TestDecodeSegmentsNormalizesTurns(t *testing.T) {
+	got, err := DecodeSegments([]byte(`{"turns":[{"index":1,"decision":"SAME"},{"index":0,"decision":"new"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Turns) != 2 || got.Turns[0].Index != 0 || got.Turns[1].Decision != SegmentDecisionSame {
+		t.Fatalf("%#v", got.Turns)
+	}
+}
+
+func TestAPIErrorKindAndRateLimit(t *testing.T) {
+	err := newAPIError(429, "429 Too Many Requests", `{"error":"rate"}`)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("unwrap = %v", err)
+	}
+	if fault.KindOf(err) != fault.KindNetwork {
+		t.Fatalf("kind = %q", fault.KindOf(err))
+	}
+}
+
+func mustCompleteErr(t *testing.T, client Client) error {
+	t.Helper()
+	_, err := client.Complete(context.Background(), CompletionRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	return err
 }

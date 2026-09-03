@@ -107,6 +107,7 @@ type ExtractOptions struct {
 	CandidateDBPath string
 	Actor           string
 	Judge           CandidateJudge
+	Segmenter       IntentSegmenter
 }
 
 // ReviewRequest describes a human review operation. EvidenceID is optional for

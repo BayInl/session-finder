@@ -10,6 +10,7 @@ import (
 
 	"github.com/BayInl/session-finder/internal/extract"
 	"github.com/BayInl/session-finder/internal/index"
+	"github.com/BayInl/session-finder/internal/llm"
 	"github.com/BayInl/session-finder/internal/record"
 )
 
@@ -290,6 +291,107 @@ func TestExtractPendingSkipsEmptySessionsAndContinues(t *testing.T) {
 	}
 	if len(pending) != 0 || len(created) != 0 {
 		t.Fatalf("second scan pending=%d created=%d, want no duplicates", len(pending), len(created))
+	}
+}
+
+func TestUserTurnsSkipsResumeAndToolOutput(t *testing.T) {
+	messages := []record.MessageRecord{
+		skillMessage("user", "/resume-claude 48e97b70-12fd-4621-9113-1ac4af203053"),
+		skillMessage("user", "查号池每个 key 还能用多少次"),
+		skillMessage("user", "I executed a terminal command: `pwd` Output: ``` /tmp ```"),
+		skillMessage("user", "用已有 frp 做端口映射"),
+	}
+	got := userTurns(messages)
+	if len(got) != 2 || !strings.Contains(got[0].text, "号池") || !strings.Contains(got[1].text, "frp") {
+		t.Fatalf("%#v", got)
+	}
+}
+
+func TestFillSegmentTurnsDefaultsMissingToSame(t *testing.T) {
+	got := fillSegmentTurns(4, llm.SegmentResult{Turns: []llm.SegmentTurn{
+		{Index: 2, Decision: llm.SegmentDecisionNew},
+	}})
+	if len(got.Turns) != 4 {
+		t.Fatalf("%#v", got.Turns)
+	}
+	if got.Turns[0].Decision != llm.SegmentDecisionNew || got.Turns[1].Decision != llm.SegmentDecisionSame || got.Turns[2].Decision != llm.SegmentDecisionNew || got.Turns[3].Decision != llm.SegmentDecisionSame {
+		t.Fatalf("%#v", got.Turns)
+	}
+}
+
+func TestSplitTranscriptUsesNewBoundariesAndFallsBack(t *testing.T) {
+	messages := []record.MessageRecord{
+		skillMessage("user", "flatten match newlines"),
+		skillMessage("assistant", "use Preview"),
+		skillMessage("user", "check redundant code"),
+		skillMessage("assistant", "deleted MatchTerms"),
+	}
+	slices := applySegmentTurns(messages, []llm.SegmentTurn{
+		{Index: 0, Decision: llm.SegmentDecisionNew},
+		{Index: 1, Decision: llm.SegmentDecisionNew},
+	})
+	if len(slices) != 2 || !strings.Contains(slices[0][0].Text, "flatten") || !strings.Contains(slices[1][0].Text, "redundant") {
+		t.Fatalf("%#v", slices)
+	}
+	same := applySegmentTurns(messages, []llm.SegmentTurn{
+		{Index: 0, Decision: llm.SegmentDecisionNew},
+		{Index: 1, Decision: llm.SegmentDecisionSame},
+	})
+	if len(same) != 1 || len(same[0]) != 4 {
+		t.Fatalf("same-task slices = %#v", same)
+	}
+	fallback := SplitTranscript(context.Background(), messages, IntentSegmenterFunc(func(context.Context, []record.MessageRecord) (llm.SegmentResult, error) {
+		return llm.SegmentResult{}, errors.New("relay down")
+	}))
+	if len(fallback) != 1 || len(fallback[0]) != 4 {
+		t.Fatalf("fallback = %#v", fallback)
+	}
+}
+
+func TestExtractPendingCreatesOneCandidatePerSegment(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "index.db")
+	candidatePath := filepath.Join(root, "candidates.db")
+	db, err := index.Open(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.InitializeSchema(db); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO sessions(tool, session_id, cwd, title, created, updated, source_path)
+		VALUES ('codex', 'mixed-session', '/tmp/mixed', 'Mixed', 1704067200, 1704067200, '/tmp/mixed.jsonl');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067201, 'Flatten escaped newlines in match previews.');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'assistant', 1704067202, 'Use Preview then wrap.');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067203, 'Looks good.');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067204, 'Inspect redundant MatchTerms lexer.');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'assistant', 1704067205, 'Reuse index.PositiveTerms.');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES (1, 'user', 1704067206, 'Approved, tests passed.');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, created, err := ExtractPending(context.Background(), ExtractOptions{
+		IndexDBPath:     indexPath,
+		CandidateDBPath: candidatePath,
+		Segmenter: IntentSegmenterFunc(func(_ context.Context, messages []record.MessageRecord) (llm.SegmentResult, error) {
+			return llm.SegmentResult{Turns: []llm.SegmentTurn{
+				{Index: 0, Decision: llm.SegmentDecisionNew},
+				{Index: 1, Decision: llm.SegmentDecisionConfirm},
+				{Index: 2, Decision: llm.SegmentDecisionNew},
+				{Index: 3, Decision: llm.SegmentDecisionConfirm},
+			}}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("created = %d want 2: %#v", len(created), created)
 	}
 }
 

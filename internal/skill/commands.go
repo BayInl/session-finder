@@ -64,10 +64,11 @@ func runExtract(argv []string) error {
 	candidateDB := set.String("candidate-db", "", "path to the candidate SQLite database")
 	actor := set.String("actor", defaultActor, "audit actor")
 	judgeMode := set.String("judge", llm.EnvJudgeMode(), "candidate judge: off, auto, or on")
+	segmentMode := set.String("segment", llm.EnvSegmentMode(), "intent segmenter: off, auto, or on")
 	asJSON := set.Bool("json", false, "emit JSON")
 	ui.AttachUsage(set, brand.Usage("skill extract [flags]"), "Extract skill candidates from sessions.", []ui.FlagGroup{
 		{Title: "Filter", Names: []string{"session", "cwd", "after", "pending"}},
-		{Title: "Judge", Names: []string{"judge"}},
+		{Title: "Judge", Names: []string{"judge", "segment"}},
 		{Title: "Output", Names: []string{"json"}},
 		{Title: "Database", Names: []string{"db", "candidate-db"}},
 	})
@@ -81,20 +82,32 @@ func runExtract(argv []string) error {
 	if err != nil {
 		return err
 	}
+	segMode, err := llm.JudgeMode(*segmentMode)
+	if err != nil {
+		return err
+	}
 	options := ExtractOptions{SessionID: *session, CWD: *cwd, After: *after, Pending: *pending,
 		IndexDBPath: *indexDB, CandidateDBPath: *candidateDB, Actor: *actor}
-	if mode != llm.JudgeOff {
+	if mode != llm.JudgeOff || segMode != llm.JudgeOff {
 		client, clientErr := llm.NewFromEnv()
 		if clientErr != nil {
-			if mode == llm.JudgeOn {
+			if mode == llm.JudgeOn || segMode == llm.JudgeOn {
 				return clientErr
 			}
 		} else if llm.IsOffline(client) {
 			if mode == llm.JudgeOn {
 				return errors.New("judge=on requires a configured online llm provider")
 			}
+			if segMode == llm.JudgeOn {
+				return errors.New("segment=on requires a configured online llm provider")
+			}
 		} else {
-			options.Judge = NewLLMCandidateJudge(client)
+			if mode != llm.JudgeOff {
+				options.Judge = NewLLMCandidateJudge(client)
+			}
+			if segMode != llm.JudgeOff {
+				options.Segmenter = NewLLMSegmenter(client)
+			}
 		}
 	}
 	ctx := context.Background()
@@ -125,14 +138,13 @@ func runExtract(argv []string) error {
 		return err
 	}
 	defer store.Close()
-	bundle, candidate, err := ExtractAndPersistWithOptions(ctx, store, messages, *actor, options)
+	candidates, err := persistTranscript(ctx, store, messages, *actor, options)
 	if err != nil && !errors.Is(err, ErrNoTranscript) {
 		return err
 	}
 	return printJSONOrText(*asJSON, struct {
-		Bundle    CandidateBundle   `json:"bundle"`
-		Candidate extract.Candidate `json:"candidate"`
-	}{bundle, candidate}, "queued candidate "+candidate.ID)
+		Candidates []extract.Candidate `json:"candidates"`
+	}{candidates}, fmt.Sprintf("queued %d candidate(s)", len(candidates)))
 }
 
 func runReview(argv []string) error {

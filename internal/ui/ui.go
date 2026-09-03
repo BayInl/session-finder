@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/BayInl/session-finder/internal/brand"
+	"github.com/BayInl/session-finder/internal/fault"
 	"github.com/BayInl/session-finder/internal/index"
 	"golang.org/x/term"
 )
@@ -111,7 +112,11 @@ func PrintError(w io.Writer, err error) {
 	}
 	theme := NewTheme(w)
 	lines := strings.Split(err.Error(), "\n")
-	fmt.Fprintln(w, theme.Style(TokenError).Render("error:")+" "+lines[0])
+	label := "error:"
+	if kind := fault.KindOf(err); kind != "" {
+		label = "error [" + string(kind) + "]:"
+	}
+	fmt.Fprintln(w, theme.Style(TokenError).Render(label)+" "+lines[0])
 	for _, line := range lines[1:] {
 		fmt.Fprintln(w, theme.Style(TokenMuted).Render(line))
 	}

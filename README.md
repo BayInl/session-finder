@@ -183,10 +183,20 @@ sfind skill list
 
 Quality gates suppress one-off or low-evidence sessions automatically, and
 publishing never overwrites an existing skill of the same name. Extraction
-runs fully offline by default; setting `SESSION_FINDER_LLM_*` environment
-variables opts into an OpenAI-compatible LLM for higher-precision extraction,
-with automatic redaction of tokens, keys, and other secrets before anything
-leaves the machine.
+runs fully offline by default. An OpenAI-compatible endpoint (including a
+Codex CLI relay) can opt in to intent segmentation and candidate judging:
+
+```sh
+export SESSION_FINDER_LLM_BASE_URL="https://relay.example:13444/v1"
+export SESSION_FINDER_LLM_API_KEY="$CLIRELAY_API_KEY"
+export SESSION_FINDER_LLM_MODEL="gpt-5.6-luna"
+sfind skill extract --pending --segment auto --judge auto
+```
+
+Secrets and paths are redacted before any request leaves the machine.
+`--segment on` / `--judge on` require a live provider; `auto` skips the LLM
+when none is configured. Segmentation splits mixed sessions into one candidate
+per user task; the judge still does not rewrite skill text.
 
 For all options, run:
 

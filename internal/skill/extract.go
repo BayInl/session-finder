@@ -161,6 +161,32 @@ func ExtractAndPersist(ctx context.Context, store *extract.Store, messages []rec
 	return ExtractAndPersistWithOptions(ctx, store, messages, actor, ExtractOptions{})
 }
 
+func persistTranscript(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string, options ExtractOptions) ([]extract.Candidate, error) {
+	slices := SplitTranscript(ctx, messages, options.Segmenter)
+	if len(slices) == 0 {
+		return nil, ErrNoTranscript
+	}
+	// Segmenter already ran; do not split again inside BuildCandidate.
+	options.Segmenter = nil
+	created := make([]extract.Candidate, 0, len(slices))
+	for _, slice := range slices {
+		_, candidate, err := ExtractAndPersistWithOptions(ctx, store, slice, actor, options)
+		if errors.Is(err, ErrNoTranscript) {
+			continue
+		}
+		if err != nil {
+			return created, err
+		}
+		if candidate.ID != "" {
+			created = append(created, candidate)
+		}
+	}
+	if len(created) == 0 {
+		return nil, ErrNoTranscript
+	}
+	return created, nil
+}
+
 // ExtractAndPersistWithOptions builds a bundle with an optional skill judge and
 // appends it to the candidate store. Judge failures retain local results.
 func ExtractAndPersistWithOptions(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string, options ExtractOptions) (CandidateBundle, extract.Candidate, error) {
@@ -498,8 +524,8 @@ func ExtractPending(ctx context.Context, options ExtractOptions) ([]PendingSessi
 			created = append(created, candidate)
 			continue
 		}
-		_, candidate, createErr := ExtractAndPersistWithOptions(ctx, store, messages, options.Actor, options)
-		if errors.Is(createErr, ErrNoTranscript) {
+		candidates, persistErr := persistTranscript(ctx, store, messages, options.Actor, options)
+		if errors.Is(persistErr, ErrNoTranscript) {
 			candidate, skipErr := persistSkippedSession(ctx, store, session, options.Actor)
 			if skipErr != nil {
 				return pending, created, skipErr
@@ -507,12 +533,10 @@ func ExtractPending(ctx context.Context, options ExtractOptions) ([]PendingSessi
 			created = append(created, candidate)
 			continue
 		}
-		if createErr != nil {
-			return pending, created, createErr
+		if persistErr != nil {
+			return pending, created, persistErr
 		}
-		if candidate.ID != "" {
-			created = append(created, candidate)
-		}
+		created = append(created, candidates...)
 	}
 	return pending, created, nil
 }
