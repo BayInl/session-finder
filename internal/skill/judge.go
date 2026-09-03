@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SkillJudgeWindowRadius       = 2
+	SkillJudgeWindowRadius       = 2 // retained for source compatibility; skill reviews now cover every message
 	SkillJudgeMaxMessageRunes    = 1200
 	SkillJudgeMaxTranscriptRunes = 6000
 )
@@ -52,8 +52,9 @@ type CandidateSnapshot struct {
 }
 
 type CandidateReview struct {
-	Candidate CandidateSnapshot `json:"candidate"`
-	Messages  []JudgeMessage    `json:"messages"`
+	Candidate    CandidateSnapshot `json:"candidate"`
+	Messages     []JudgeMessage    `json:"messages"`
+	Conversation []JudgeMessage    `json:"conversation_context,omitempty"`
 }
 
 type CandidateJudgment = llm.RiskJudgeResponse
@@ -77,14 +78,19 @@ func (j *llmCandidateJudge) Judge(ctx context.Context, review CandidateReview) (
 	if err != nil {
 		return CandidateJudgment{}, err
 	}
+	conversationJSON, err := json.Marshal(review.Conversation)
+	if err != nil {
+		return CandidateJudgment{}, err
+	}
 	messages := make([]llm.Message, 0, len(review.Messages))
 	for _, message := range review.Messages {
 		messages = append(messages, llm.Message{Role: message.Role, Content: message.Content})
 	}
 	response, err := j.client.Complete(ctx, llm.RedactRequest(llm.CompletionRequest{
 		Transcript: messages,
-		Prompt:     skillJudgePrompt + "\n<candidate>\n" + string(candidateJSON) + "\n</candidate>",
-		Schema:     CandidateJudgeSchema(),
+		Prompt: skillJudgePrompt + "\n<candidate>\n" + string(candidateJSON) + "\n</candidate>" +
+			"\n<conversation_context>\n" + string(conversationJSON) + "\n</conversation_context>",
+		Schema: CandidateJudgeSchema(),
 	}))
 	if err != nil {
 		return CandidateJudgment{}, err
@@ -100,47 +106,64 @@ func decodeCandidateJudgment(data []byte) (CandidateJudgment, error) {
 	return judgment, nil
 }
 
-func boundCandidateReview(review CandidateReview) CandidateReview {
-	result := review
-	result.Candidate.SuccessEvidence = append([]string(nil), review.Candidate.SuccessEvidence...)
-	result.Messages = make([]JudgeMessage, 0, len(review.Messages))
-	runes := 0
-	for _, message := range review.Messages {
-		content := strings.TrimSpace(message.Content)
-		if content == "" || runes >= SkillJudgeMaxTranscriptRunes {
+func boundJudgeMessages(messages []JudgeMessage) []JudgeMessage {
+	filtered := make([]JudgeMessage, 0, len(messages))
+	for _, message := range messages {
+		if strings.TrimSpace(message.Content) != "" {
+			filtered = append(filtered, message)
+		}
+	}
+	if len(filtered) == 0 {
+		return []JudgeMessage{}
+	}
+	base := SkillJudgeMaxTranscriptRunes / len(filtered)
+	remainder := SkillJudgeMaxTranscriptRunes % len(filtered)
+	result := make([]JudgeMessage, 0, len(filtered))
+	for index, message := range filtered {
+		limit := base
+		if index < remainder {
+			limit++
+		}
+		if limit > SkillJudgeMaxMessageRunes {
+			limit = SkillJudgeMaxMessageRunes
+		}
+		if limit <= 0 {
 			continue
 		}
+		content := strings.TrimSpace(message.Content)
 		contentRunes := []rune(content)
-		if len(contentRunes) > SkillJudgeMaxMessageRunes {
-			content = string(contentRunes[:SkillJudgeMaxMessageRunes]) + "…"
+		if len(contentRunes) > limit {
+			content = string(contentRunes[:limit]) + "…"
 		}
-		remaining := SkillJudgeMaxTranscriptRunes - runes
-		contentRunes = []rune(content)
-		if len(contentRunes) > remaining {
-			content = string(contentRunes[:remaining]) + "…"
-		}
-		result.Messages = append(result.Messages, JudgeMessage{Index: message.Index, Role: strings.ToLower(strings.TrimSpace(message.Role)), Content: content})
-		runes += len([]rune(content))
+		result = append(result, JudgeMessage{Index: message.Index, Role: strings.ToLower(strings.TrimSpace(message.Role)), Content: content})
 	}
 	return result
 }
 
-func candidateReview(messages []record.MessageRecord, bundle CandidateBundle) CandidateReview {
-	end := len(messages)
-	if end > 2*SkillJudgeWindowRadius+1 {
-		end = 2*SkillJudgeWindowRadius + 1
+func boundCandidateReview(review CandidateReview) CandidateReview {
+	result := review
+	result.Candidate.SuccessEvidence = append([]string(nil), review.Candidate.SuccessEvidence...)
+	result.Messages = boundJudgeMessages(review.Messages)
+	result.Conversation = boundJudgeMessages(review.Conversation)
+	return result
+}
+
+func judgeMessages(messages []record.MessageRecord) []JudgeMessage {
+	result := make([]JudgeMessage, 0, len(messages))
+	for index, message := range messages {
+		result = append(result, JudgeMessage{Index: index + 1, Role: message.Role, Content: message.Text})
 	}
-	window := make([]JudgeMessage, 0, end)
-	for index := 0; index < end; index++ {
-		window = append(window, JudgeMessage{Index: index + 1, Role: messages[index].Role, Content: messages[index].Text})
-	}
+	return result
+}
+
+func candidateReview(messages, conversation []record.MessageRecord, bundle CandidateBundle) CandidateReview {
 	signals := bundle.Quality.Signals
 	return boundCandidateReview(CandidateReview{Candidate: CandidateSnapshot{
 		Slug: bundle.Slug, Trigger: bundle.Trigger, Instructions: bundle.Instructions,
 		QualityDisposition: bundle.Quality.Disposition, Score: bundle.Quality.Score,
 		Confidence: signals.Confidence, SuccessEvidence: signals.SuccessEvidence,
 		OneOffRisk: signals.OneOffRisk, SecretRisk: signals.SecretRisk,
-	}, Messages: window})
+	}, Messages: judgeMessages(messages), Conversation: judgeMessages(conversation)})
 }
 
 func appendSkillReason(values []string, value string) []string {
@@ -164,15 +187,13 @@ func applyCandidateJudgment(bundle CandidateBundle, judgment CandidateJudgment) 
 		bundle.Quality.Disposition = QualitySuppress
 		bundle.Quality.Score = 0
 		action = extract.ActionSuppress
-	case "review":
-		bundle.Quality.Disposition = QualitySuppress
-		bundle.Quality.Score = 0
+	case llm.JudgeDispositionReview:
+		bundle.Quality.Disposition = QualityDraft
 		bundle.Quality.Reasons = appendSkillReason(bundle.Quality.Reasons, "llm:review")
 		action = extract.ActionReview
 	case QualityDraft:
 		if bundle.Slug == "" || bundle.Trigger == "" || bundle.Instructions == "" {
-			bundle.Quality.Disposition = QualitySuppress
-			bundle.Quality.Score = 0
+			bundle.Quality.Disposition = QualityDraft
 			bundle.Quality.Reasons = appendSkillReason(bundle.Quality.Reasons, "llm:review-missing-fields")
 			action = extract.ActionReview
 		} else if judgment.Confidence > bundle.Quality.Signals.Confidence && bundle.Quality.Disposition != QualitySuppress {
@@ -188,7 +209,7 @@ func applyCandidateJudgment(bundle CandidateBundle, judgment CandidateJudgment) 
 	if judgment.SecretRisk > bundle.Quality.Signals.SecretRisk {
 		bundle.Quality.Signals.SecretRisk = judgment.SecretRisk
 	}
-	if bundle.Quality.Signals.OneOffRisk >= HighOneOffRisk || bundle.Quality.Signals.SecretRisk >= HighSecretRisk || len(bundle.Quality.Signals.SuccessEvidence) < MinimumSuccessEvidence {
+	if judgment.Disposition != llm.JudgeDispositionReview && (bundle.Quality.Signals.OneOffRisk >= HighOneOffRisk || bundle.Quality.Signals.SecretRisk >= HighSecretRisk || len(bundle.Quality.Signals.SuccessEvidence) < MinimumSuccessEvidence) {
 		bundle.Quality.Disposition = QualitySuppress
 		bundle.Quality.Score = 0
 		action = extract.ActionSuppress

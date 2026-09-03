@@ -9,11 +9,13 @@ import "errors"
 type Kind string
 
 const (
-	KindInvalid  Kind = "invalid"
-	KindConfig   Kind = "config"
-	KindNetwork  Kind = "network"
-	KindSchema   Kind = "schema"
-	KindOffline  Kind = "offline"
+	KindInvalid Kind = "invalid"
+	KindConfig  Kind = "config"
+	KindNetwork Kind = "network"
+	KindSchema  Kind = "schema"
+	KindOffline Kind = "offline"
+	// KindInternal is reserved for violated invariants and implementation
+	// failures that do not fit a user-actionable kind.
 	KindInternal Kind = "internal"
 )
 

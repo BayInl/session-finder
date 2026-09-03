@@ -2,7 +2,9 @@ package skill
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,24 @@ import (
 
 func skillMessage(role, text string) record.MessageRecord {
 	return record.MessageRecord{Tool: "codex", SessionID: "session-1", CWD: "/tmp/project", Role: role, Text: text, SourcePath: "/tmp/session.json"}
+}
+
+type segmentTestClient struct {
+	calls [][]llm.Message
+}
+
+func (c *segmentTestClient) Complete(_ context.Context, request llm.CompletionRequest) (llm.CompletionResponse, error) {
+	c.calls = append(c.calls, append([]llm.Message(nil), request.Transcript...))
+	turns := make([]llm.SegmentTurn, len(request.Transcript))
+	for index := range turns {
+		decision := llm.SegmentDecisionSame
+		if index == 0 {
+			decision = llm.SegmentDecisionNew
+		}
+		turns[index] = llm.SegmentTurn{Index: index, Decision: decision}
+	}
+	data, err := json.Marshal(llm.SegmentResult{Turns: turns})
+	return llm.CompletionResponse{Provider: "test", Model: "test", JSON: data}, err
 }
 
 func TestQualityGateSuppressesMissingEvidenceAndOneOff(t *testing.T) {
@@ -308,14 +328,34 @@ func TestUserTurnsSkipsResumeAndToolOutput(t *testing.T) {
 }
 
 func TestFillSegmentTurnsDefaultsMissingToSame(t *testing.T) {
-	got := fillSegmentTurns(4, llm.SegmentResult{Turns: []llm.SegmentTurn{
+	got, missing := fillSegmentTurnsObserved(4, llm.SegmentResult{Turns: []llm.SegmentTurn{
 		{Index: 2, Decision: llm.SegmentDecisionNew},
 	}})
-	if len(got.Turns) != 4 {
-		t.Fatalf("%#v", got.Turns)
+	if len(got.Turns) != 4 || len(missing) != 3 {
+		t.Fatalf("turns=%#v missing=%#v", got.Turns, missing)
 	}
 	if got.Turns[0].Decision != llm.SegmentDecisionNew || got.Turns[1].Decision != llm.SegmentDecisionSame || got.Turns[2].Decision != llm.SegmentDecisionNew || got.Turns[3].Decision != llm.SegmentDecisionSame {
 		t.Fatalf("%#v", got.Turns)
+	}
+}
+
+func TestUserTurnsCoversLongTranscript(t *testing.T) {
+	messages := make([]record.MessageRecord, 0, 120)
+	for i := 0; i < 60; i++ {
+		messages = append(messages, skillMessage("user", fmt.Sprintf("task turn %d", i)))
+		messages = append(messages, skillMessage("assistant", "ack"))
+	}
+	turns := userTurns(messages)
+	if len(turns) != 60 || !strings.Contains(turns[59].text, "59") {
+		t.Fatalf("user turns = %d last=%#v", len(turns), turns[len(turns)-1])
+	}
+	client := &segmentTestClient{}
+	result, err := NewLLMSegmenter(client).Segment(context.Background(), messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.calls) != 2 || len(client.calls[0]) != 48 || len(client.calls[1]) != 13 || len(result.Turns) != 60 || result.Turns[59].Index != 59 {
+		t.Fatalf("calls=%v turns=%#v", []int{len(client.calls[0]), len(client.calls[1])}, result.Turns)
 	}
 }
 
@@ -340,11 +380,43 @@ func TestSplitTranscriptUsesNewBoundariesAndFallsBack(t *testing.T) {
 	if len(same) != 1 || len(same[0]) != 4 {
 		t.Fatalf("same-task slices = %#v", same)
 	}
-	fallback := SplitTranscript(context.Background(), messages, IntentSegmenterFunc(func(context.Context, []record.MessageRecord) (llm.SegmentResult, error) {
+	fallback := SplitTranscriptDetailed(context.Background(), messages, IntentSegmenterFunc(func(context.Context, []record.MessageRecord) (llm.SegmentResult, error) {
 		return llm.SegmentResult{}, errors.New("relay down")
 	}))
-	if len(fallback) != 1 || len(fallback[0]) != 4 {
+	if len(fallback.Slices) != 1 || len(fallback.Slices[0]) != 4 || !fallback.Fallback || len(fallback.Observations) != 1 || fallback.Observations[0].Kind != SegmentFallbackError {
 		t.Fatalf("fallback = %#v", fallback)
+	}
+	missing := SplitTranscriptDetailed(context.Background(), messages, IntentSegmenterFunc(func(context.Context, []record.MessageRecord) (llm.SegmentResult, error) {
+		return llm.SegmentResult{Turns: []llm.SegmentTurn{{Index: 0, Decision: llm.SegmentDecisionNew}}}, nil
+	}))
+	if !missing.Fallback || len(missing.Observations) != 1 || missing.Observations[0].Kind != SegmentFallbackMissing || missing.Observations[0].Count != 1 {
+		t.Fatalf("missing-index observation = %#v", missing)
+	}
+}
+
+func TestPersistTranscriptMarksSegmentFallback(t *testing.T) {
+	store, err := extract.Open(filepath.Join(t.TempDir(), "candidates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	messages := []record.MessageRecord{
+		skillMessage("user", "Document the release workflow."),
+		skillMessage("assistant", "Run go test ./...; then build the release artifact."),
+		skillMessage("user", "Looks good, approved. go test ./... passed."),
+	}
+	created, err := persistTranscript(context.Background(), store, messages, "test", ExtractOptions{Segmenter: IntentSegmenterFunc(func(context.Context, []record.MessageRecord) (llm.SegmentResult, error) {
+		return llm.SegmentResult{}, errors.New("offline relay")
+	})})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("created=%#v err=%v", created, err)
+	}
+	bundle, err := BundleFromCandidate(created[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !skillTestContains(bundle.Quality.Reasons, "segment:fallback:segmenter_error:1") {
+		t.Fatalf("fallback reason missing: %#v", bundle.Quality.Reasons)
 	}
 }
 
@@ -507,6 +579,20 @@ func skillTestContains(values []string, value string) bool {
 	return false
 }
 
+func TestBoundCandidateReviewRetainsEveryMessage(t *testing.T) {
+	messages := make([]JudgeMessage, 20)
+	for index := range messages {
+		messages[index] = JudgeMessage{Index: index + 1, Role: "user", Content: strings.Repeat(fmt.Sprintf("message-%d ", index), 200)}
+	}
+	bounded := boundCandidateReview(CandidateReview{Messages: messages, Conversation: messages})
+	if len(bounded.Messages) != len(messages) || len(bounded.Conversation) != len(messages) {
+		t.Fatalf("bounded lengths = %d/%d", len(bounded.Messages), len(bounded.Conversation))
+	}
+	if bounded.Messages[19].Index != 20 || !strings.Contains(bounded.Messages[19].Content, "message-19") {
+		t.Fatalf("last candidate message lost: %#v", bounded.Messages[19])
+	}
+}
+
 func TestBuildCandidateJudgeRunsForLowConfidenceCandidates(t *testing.T) {
 	calls := 0
 	var seen CandidateReview
@@ -515,16 +601,25 @@ func TestBuildCandidateJudgeRunsForLowConfidenceCandidates(t *testing.T) {
 		seen = review
 		return CandidateJudgment{Disposition: QualityDraft, Confidence: 0.91, ReasonCodes: []string{"reusable"}}, nil
 	})
-	bundle, err := BuildCandidateWithOptions([]record.MessageRecord{
+	messages := []record.MessageRecord{
 		skillMessage("user", "Document the release workflow."),
 		skillMessage("assistant", "Run go test ./...; then build the release artifact."),
+		skillMessage("user", "Add checksum verification."),
+		skillMessage("assistant", "Verify checksums before publishing."),
+		skillMessage("user", "Keep the rollback notes."),
+		skillMessage("assistant", "Rollback notes retained."),
 		skillMessage("user", "Looks good, approved. go test ./... passed with all tests green."),
-	}, ExtractOptions{Judge: judge})
+	}
+	conversation := append([]record.MessageRecord{skillMessage("user", "Parent conversation context before this segment.")}, messages...)
+	bundle, err := BuildCandidateWithOptions(messages, ExtractOptions{Judge: judge, ConversationContext: conversation})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || seen.Candidate.Slug == "" || len(seen.Messages) == 0 {
+	if calls != 1 || seen.Candidate.Slug == "" || len(seen.Messages) != len(messages) || len(seen.Conversation) != len(conversation) {
 		t.Fatalf("judge calls/review = %d/%#v", calls, seen)
+	}
+	if !strings.Contains(seen.Messages[len(seen.Messages)-1].Content, "passed") || !strings.Contains(seen.Conversation[0].Content, "Parent conversation") {
+		t.Fatalf("judge did not receive complete candidate/parent context: %#v", seen)
 	}
 	if bundle.Quality.Signals.Confidence != 0.91 || bundle.Quality.Signals.RecommendedAction != extract.ActionDraft {
 		t.Fatalf("judge metadata = %+v", bundle.Quality)
@@ -578,7 +673,7 @@ func TestApplyCandidateJudgmentOnlyRaisesRisksAndSynchronizesMetadata(t *testing
 	if got.Quality.Signals.OneOffRisk != 0.8 || got.Quality.Signals.SecretRisk != 0.7 {
 		t.Fatalf("risks not synchronized: %+v", got.Quality)
 	}
-	if got.Quality.Signals.Confidence != 0.7 || got.Quality.Score != 0 || got.Quality.Signals.RecommendedAction != extract.ActionSuppress || got.Quality.Disposition != QualitySuppress {
+	if got.Quality.Signals.Confidence != 0.7 || got.Quality.Score != 0.72 || got.Quality.Signals.RecommendedAction != extract.ActionReview || got.Quality.Disposition != QualityDraft {
 		t.Fatalf("review metadata = %+v", got.Quality)
 	}
 	lower := applyCandidateJudgment(bundle, CandidateJudgment{Disposition: QualityDraft, Confidence: 0.1, OneOffRisk: 0.01, SecretRisk: 0.02})
