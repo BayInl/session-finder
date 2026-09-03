@@ -31,17 +31,7 @@ func BuildCandidate(messages []record.MessageRecord) (CandidateBundle, error) {
 // judge after the local quality gate. Hard suppressions never invoke an LLM;
 // judge failures retain the deterministic bundle and add a fallback reason.
 func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractOptions) (CandidateBundle, error) {
-	clean := make([]record.MessageRecord, 0, len(messages))
-	for _, message := range messages {
-		if strings.TrimSpace(message.Text) == "" || strings.EqualFold(strings.TrimSpace(message.Role), "system") || isInjectedNoiseText(message.Text) {
-			continue
-		}
-		message.Role = strings.ToLower(strings.TrimSpace(message.Role))
-		if message.Role != "user" && message.Role != "assistant" {
-			continue
-		}
-		clean = append(clean, message)
-	}
+	clean := cleanSkillMessages(messages)
 	if len(clean) == 0 {
 		return CandidateBundle{
 			Quality:  EvaluateQuality(extract.Analyze(nil)),
@@ -81,8 +71,12 @@ func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractO
 		CWD:          firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.CWD }),
 		SourcePath:   firstNonEmptyString(clean, func(message record.MessageRecord) string { return message.SourcePath }),
 	}
+	for _, observation := range options.SegmentObservations {
+		bundle.Quality.Reasons = appendSkillReason(bundle.Quality.Reasons, observation.reason())
+	}
 	if options.Judge != nil && quality.Disposition != QualitySuppress && quality.Signals.OneOffRisk < HighOneOffRisk && quality.Signals.SecretRisk < HighSecretRisk && len(quality.Signals.SuccessEvidence) >= MinimumSuccessEvidence && quality.Signals.Confidence < 0.85 {
-		judgment, err := options.Judge.Judge(context.Background(), candidateReview(clean, bundle))
+		conversation := cleanSkillMessages(options.ConversationContext)
+		judgment, err := options.Judge.Judge(context.Background(), candidateReview(clean, conversation, bundle))
 		if err != nil {
 			bundle.Quality.Reasons = appendSkillReason(bundle.Quality.Reasons, "llm:fallback")
 		} else {
@@ -90,6 +84,21 @@ func BuildCandidateWithOptions(messages []record.MessageRecord, options ExtractO
 		}
 	}
 	return normalizeBundle(bundle), nil
+}
+
+func cleanSkillMessages(messages []record.MessageRecord) []record.MessageRecord {
+	clean := make([]record.MessageRecord, 0, len(messages))
+	for _, message := range messages {
+		if strings.TrimSpace(message.Text) == "" || strings.EqualFold(strings.TrimSpace(message.Role), "system") || isInjectedNoiseText(message.Text) {
+			continue
+		}
+		message.Role = strings.ToLower(strings.TrimSpace(message.Role))
+		if message.Role != "user" && message.Role != "assistant" {
+			continue
+		}
+		clean = append(clean, message)
+	}
+	return clean
 }
 
 // Extract is the concise public extraction API.
@@ -162,14 +171,18 @@ func ExtractAndPersist(ctx context.Context, store *extract.Store, messages []rec
 }
 
 func persistTranscript(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string, options ExtractOptions) ([]extract.Candidate, error) {
-	slices := SplitTranscript(ctx, messages, options.Segmenter)
-	if len(slices) == 0 {
+	split := SplitTranscriptDetailed(ctx, messages, options.Segmenter)
+	if len(split.Slices) == 0 {
 		return nil, ErrNoTranscript
 	}
-	// Segmenter already ran; do not split again inside BuildCandidate.
+	// Segmenter already ran; do not split again inside BuildCandidate. Preserve
+	// the complete parent conversation and any repair/fallback observations for
+	// every candidate emitted from this transcript.
 	options.Segmenter = nil
-	created := make([]extract.Candidate, 0, len(slices))
-	for _, slice := range slices {
+	options.ConversationContext = messages
+	options.SegmentObservations = split.Observations
+	created := make([]extract.Candidate, 0, len(split.Slices))
+	for _, slice := range split.Slices {
 		_, candidate, err := ExtractAndPersistWithOptions(ctx, store, slice, actor, options)
 		if errors.Is(err, ErrNoTranscript) {
 			continue

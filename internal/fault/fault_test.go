@@ -21,4 +21,8 @@ func TestKindOfAndIs(t *testing.T) {
 	if Wrap(KindNetwork, nil, "x") != nil {
 		t.Fatal("Wrap(nil) must be nil")
 	}
+	internal := Wrap(KindInternal, errors.New("broken invariant"), "extract failed")
+	if KindOf(internal) != KindInternal || internal.Error() != "extract failed: broken invariant" {
+		t.Fatalf("reserved internal wrapper = %v kind=%q", internal, KindOf(internal))
+	}
 }

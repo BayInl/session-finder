@@ -94,12 +94,18 @@ func runExtract(argv []string) error {
 			if mode == llm.JudgeOn || segMode == llm.JudgeOn {
 				return clientErr
 			}
+			if segMode == llm.JudgeAuto {
+				options.Segmenter = unavailableSegmenter{err: clientErr}
+			}
 		} else if llm.IsOffline(client) {
 			if mode == llm.JudgeOn {
 				return errors.New("judge=on requires a configured online llm provider")
 			}
 			if segMode == llm.JudgeOn {
 				return errors.New("segment=on requires a configured online llm provider")
+			}
+			if segMode == llm.JudgeAuto {
+				options.Segmenter = unavailableSegmenter{err: errors.New("segment auto mode has no configured online llm provider")}
 			}
 		} else {
 			if mode != llm.JudgeOff {
@@ -116,10 +122,12 @@ func runExtract(argv []string) error {
 		if err != nil {
 			return err
 		}
+		fallbacks := segmentFallbackCandidateCount(candidates)
 		return printJSONOrStyled(*asJSON, struct {
-			Pending    []PendingSession    `json:"pending"`
-			Candidates []extract.Candidate `json:"candidates"`
-		}{pendingSessions, candidates}, fmt.Sprintf("queued %d of %d pending sessions", len(candidates), len(pendingSessions)), ui.TokenInfo)
+			Pending          []PendingSession    `json:"pending"`
+			Candidates       []extract.Candidate `json:"candidates"`
+			SegmentFallbacks int                 `json:"segment_fallbacks"`
+		}{pendingSessions, candidates, fallbacks}, fmt.Sprintf("queued %d of %d pending sessions (%d segment fallback candidate(s))", len(candidates), len(pendingSessions), fallbacks), ui.TokenInfo)
 	}
 	db, err := openIndexForSkill(*indexDB)
 	if err != nil {
@@ -142,9 +150,11 @@ func runExtract(argv []string) error {
 	if err != nil && !errors.Is(err, ErrNoTranscript) {
 		return err
 	}
+	fallbacks := segmentFallbackCandidateCount(candidates)
 	return printJSONOrText(*asJSON, struct {
-		Candidates []extract.Candidate `json:"candidates"`
-	}{candidates}, fmt.Sprintf("queued %d candidate(s)", len(candidates)))
+		Candidates       []extract.Candidate `json:"candidates"`
+		SegmentFallbacks int                 `json:"segment_fallbacks"`
+	}{candidates, fallbacks}, fmt.Sprintf("queued %d candidate(s) (%d segment fallback candidate(s))", len(candidates), fallbacks))
 }
 
 func runReview(argv []string) error {
@@ -300,6 +310,23 @@ func runList(argv []string) error {
 		fmt.Printf("%s\t%s\t%s\t%s\n", candidate.ID, candidate.Status, candidate.Title, candidate.SessionID)
 	}
 	return nil
+}
+
+func segmentFallbackCandidateCount(candidates []extract.Candidate) int {
+	count := 0
+	for _, candidate := range candidates {
+		bundle, err := BundleFromCandidate(candidate)
+		if err != nil {
+			continue
+		}
+		for _, reason := range bundle.Quality.Reasons {
+			if strings.HasPrefix(reason, "segment:fallback:") {
+				count++
+				break
+			}
+		}
+	}
+	return count
 }
 
 func printJSONOrText(asJSON bool, value any, text string) error {

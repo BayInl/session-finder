@@ -99,15 +99,17 @@ type CandidateBundle struct {
 // candidate persistence. Judge is deliberately separate from the shared
 // extract.SignalBundle path so skill quality remains independently gated.
 type ExtractOptions struct {
-	SessionID       string
-	CWD             string
-	After           string
-	Pending         bool
-	IndexDBPath     string
-	CandidateDBPath string
-	Actor           string
-	Judge           CandidateJudge
-	Segmenter       IntentSegmenter
+	SessionID           string
+	CWD                 string
+	After               string
+	Pending             bool
+	IndexDBPath         string
+	CandidateDBPath     string
+	Actor               string
+	Judge               CandidateJudge
+	Segmenter           IntentSegmenter
+	ConversationContext []record.MessageRecord
+	SegmentObservations []SegmentObservation
 }
 
 // ReviewRequest describes a human review operation. EvidenceID is optional for
