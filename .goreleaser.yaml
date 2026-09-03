@@ -47,7 +47,7 @@ release:
 
 # brews is deprecated but still supported; defer homebrew_casks until tap_migrations.json, README --cask, and quarantine handling are coordinated.
 brews:
-  - name: session-finder
+  - name: sfind
     ids:
       - default
     repository:
@@ -56,7 +56,7 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     homepage: https://github.com/BayInl/session-finder
-    description: Search local AI sessions from multiple tools
+    description: Search local AI coding sessions from multiple tools
     license: MIT
     test: |
       system "#{bin}/sfind", "--help"
