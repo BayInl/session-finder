@@ -88,6 +88,29 @@ sfind show SESSION_ID
 sfind show SESSION_ID --role assistant --limit 20
 ```
 
+### TUI keys
+
+The TUI enables mouse tracking for pane scrolling, so use its yank keys instead
+of terminal drag-selection when copying transcript text.
+
+| Key | Action |
+| --- | --- |
+| `/` | Search sessions |
+| `j` / `k`, arrows | Move through sessions or transcript messages |
+| `enter` / `l` | Load the selected transcript |
+| `y` | Copy the selected message text |
+| `Y` | Copy the complete loaded transcript |
+| `tab` | Switch panes |
+| `t`, `1`-`5` | Cycle or select a source tool |
+| `g` / `G`, `home` / `end` | Go to the first or last item |
+| `pgup` / `pgdown`, `ctrl+u` / `ctrl+d` | Scroll by a page or half-page |
+| `esc` / `h` | Go back |
+| `?` | Show all key bindings |
+| `q`, `ctrl+c`, `ctrl+q` | Quit |
+
+Clipboard writes use OSC52 when the terminal supports it, including compatible
+remote SSH sessions, and fall back to `pbcopy` on local macOS terminals.
+
 Show the build version, commit, and build date:
 
 ```sh

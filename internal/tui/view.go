@@ -100,6 +100,9 @@ func (m Model) renderStatus(width int) string {
 	theme := m.theme
 	primary := theme.Style(ui.TokenPrimary)
 	muted := theme.Style(ui.TokenMuted)
+	if m.copyStatus != "" {
+		return clipLine(primary.Render(brand.Name)+"  "+m.copyStatus, width)
+	}
 	query := m.query
 	if m.searching {
 		query = m.input.View()
@@ -206,9 +209,14 @@ func paneInnerSize(width, height int) (innerW, innerH int) {
 }
 
 func (m Model) detailContent() string {
+	content, _ := m.detailContentWithHeaderLine()
+	return content
+}
+
+func (m Model) detailContentWithHeaderLine() (string, int) {
 	hit := m.selectedHit()
 	if hit == nil {
-		return m.theme.Style(ui.TokenMuted).Render("Select a session.")
+		return m.theme.Style(ui.TokenMuted).Render("Select a session."), -1
 	}
 	muted := m.theme.Style(ui.TokenMuted)
 	var b strings.Builder
@@ -243,21 +251,33 @@ func (m Model) detailContent() string {
 	if m.loadedID != hit.SessionID || len(m.detail) == 0 {
 		b.WriteString(muted.Render("enter/l load transcript"))
 		writeMatchSnippets(&b, hit.Snippets, terms, match, muted, wrapW)
-		return b.String()
+		return b.String(), -1
 	}
 	b.WriteString(muted.Render("transcript"))
 	b.WriteString("\n\n")
+	headerLine := -1
+	line := strings.Count(b.String(), "\n")
 	for i, row := range m.detail {
 		if i > 0 {
 			b.WriteByte('\n')
+			line++
 		}
-		fmt.Fprintf(&b, "%s %s\n", muted.Render("["+row.Timestamp+"]"), m.theme.Role(row.Role).Render(row.Role))
-		for _, line := range ui.WrapTextLines(row.Text, wrapW) {
-			b.WriteString(ui.HighlightTerms(line, terms, match))
+		if i == m.detailIndex {
+			headerLine = line
+		}
+		cursor := " "
+		if i == m.detailIndex {
+			cursor = "▸"
+		}
+		fmt.Fprintf(&b, "%s %s %s\n", cursor, muted.Render("["+row.Timestamp+"]"), m.theme.Role(row.Role).Render(row.Role))
+		line++
+		for _, wrapped := range ui.WrapTextLines(row.Text, wrapW) {
+			b.WriteString(ui.HighlightTerms(wrapped, terms, match))
 			b.WriteByte('\n')
+			line++
 		}
 	}
-	return b.String()
+	return b.String(), headerLine
 }
 
 func matchStyle(theme ui.Theme, color bool) lipgloss.Style {

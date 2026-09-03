@@ -20,6 +20,31 @@ type fakeStore struct {
 	rows map[string][]index.ShowRow
 }
 
+type fakeClipboard struct {
+	texts     []string
+	truncated bool
+	err       error
+	async     bool
+}
+
+func (f *fakeClipboard) Copy(text string, seq uint64) clipboardPlan {
+	f.texts = append(f.texts, text)
+	chars := len([]rune(text))
+	if f.async {
+		return clipboardPlan{
+			async: true,
+			cmd: func() tea.Msg {
+				return clipboardResultMsg{seq: seq, chars: chars, truncated: f.truncated, err: f.err}
+			},
+		}
+	}
+	return clipboardPlan{
+		cmd:       func() tea.Msg { return nil },
+		chars:     chars,
+		truncated: f.truncated,
+	}
+}
+
 func (f fakeStore) Search(query, tool string, limit int) ([]index.SearchResult, error) {
 	out := make([]index.SearchResult, 0, len(f.hits))
 	q := strings.ToLower(strings.TrimSpace(query))
@@ -430,6 +455,136 @@ func TestTranscriptPreservesCodeContent(t *testing.T) {
 	detail := m.detailContent()
 	if !strings.Contains(detail, "if ok {\n\treturn `\\n`\n}") {
 		t.Fatalf("transcript changed code content: %q", detail)
+	}
+}
+
+func TestYankSelectedMessageAndTranscript(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{hits: testHits()[:1], rows: testRows()}, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()[:1]})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = applyKey(t, m, "enter")
+	clipboard := &fakeClipboard{}
+	m.clipboard = clipboard
+
+	m = applyKey(t, m, "j")
+	if m.detailIndex != 1 {
+		t.Fatalf("detail index = %d want 1", m.detailIndex)
+	}
+	next, cmd := m.Update(keyPress("y"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("y should schedule status clear")
+	}
+	if len(clipboard.texts) != 1 || clipboard.texts[0] != "ok" {
+		t.Fatalf("message copies = %#v", clipboard.texts)
+	}
+	if m.copyStatus != "copied 2 chars" {
+		t.Fatalf("copy status = %q", m.copyStatus)
+	}
+
+	next, cmd = m.Update(keyPress("Y"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("Y should schedule status clear")
+	}
+	want := "user:\ndeploy alpha\n\nassistant:\nok"
+	if len(clipboard.texts) != 2 || clipboard.texts[1] != want {
+		t.Fatalf("transcript copies = %#v", clipboard.texts)
+	}
+	if !strings.Contains(m.renderStatus(120), "copied 33 chars") {
+		t.Fatalf("status bar = %q", m.renderStatus(120))
+	}
+}
+
+func TestYankStatusReportsActualOSC52Truncation(t *testing.T) {
+	rows := []index.ShowRow{{
+		Tool: "codex", SessionID: "session-alpha", Role: "assistant", Timestamp: "now",
+		Text: strings.Repeat("x", maxOSC52Bytes+1),
+	}}
+	store := fakeStore{hits: testHits()[:1], rows: map[string][]index.ShowRow{"session-alpha": rows}}
+	m := New(Config{Limit: 20}, store, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()[:1]})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = applyKey(t, m, "enter")
+	m.clipboard = systemClipboard{term: "xterm-256color", goos: "linux", maxBytes: maxOSC52Bytes}
+
+	next, cmd := m.Update(keyPress("Y"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("Y should return clipboard and status commands")
+	}
+	if m.copyStatus != "copied 100000 chars (truncated)" {
+		t.Fatalf("copy status = %q", m.copyStatus)
+	}
+}
+
+func TestDetailHeaderLineIgnoresMessagePrefix(t *testing.T) {
+	rows := []index.ShowRow{
+		{Tool: "codex", SessionID: "session-alpha", Role: "user", Timestamp: "one", Text: "▸ body prefix must not be treated as a header"},
+		{Tool: "codex", SessionID: "session-alpha", Role: "assistant", Timestamp: "two", Text: strings.Repeat("long body line\n", 20)},
+	}
+	store := fakeStore{hits: testHits()[:1], rows: map[string][]index.ShowRow{"session-alpha": rows}}
+	m := New(Config{Limit: 20}, store, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()[:1]})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 80, Height: 14})
+	m = applyKey(t, m, "enter")
+	m = applyKey(t, m, "j")
+
+	content, wantHeaderLine := m.detailContentWithHeaderLine()
+	if wantHeaderLine <= 0 {
+		t.Fatalf("header line = %d\n%s", wantHeaderLine, content)
+	}
+	if m.detailHeaderLine != wantHeaderLine {
+		t.Fatalf("stored header line = %d want %d", m.detailHeaderLine, wantHeaderLine)
+	}
+	wantOffset := maxInt(0, wantHeaderLine-m.viewport.Height()/2)
+	if m.viewport.YOffset() != wantOffset {
+		t.Fatalf("viewport offset = %d want %d", m.viewport.YOffset(), wantOffset)
+	}
+}
+
+func TestYankOnlyDispatchesInLoadedDetail(t *testing.T) {
+	m := newTestModel(t)
+	clipboard := &fakeClipboard{}
+	m.clipboard = clipboard
+	m = applyKey(t, m, "y")
+	m = applyKey(t, m, "Y")
+	if len(clipboard.texts) != 0 {
+		t.Fatalf("unexpected copies = %#v", clipboard.texts)
+	}
+}
+
+func TestAsyncClipboardResultSetsStatus(t *testing.T) {
+	m := New(Config{Limit: 20}, fakeStore{hits: testHits()[:1], rows: testRows()}, io.Discard)
+	m = apply(t, m, searchMsg{results: testHits()[:1]})
+	m = apply(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = applyKey(t, m, "enter")
+	m.clipboard = &fakeClipboard{async: true}
+
+	next, cmd := m.Update(keyPress("y"))
+	m = next.(Model)
+	if cmd == nil || m.copyStatus != "" {
+		t.Fatalf("async start: cmd=%v status=%q", cmd != nil, m.copyStatus)
+	}
+	result := cmd()
+	next, clearCmd := m.Update(result)
+	m = next.(Model)
+	if clearCmd == nil || m.copyStatus != "copied 12 chars" {
+		t.Fatalf("async result: clear=%v status=%q", clearCmd != nil, m.copyStatus)
+	}
+}
+
+func TestCopyStatusIgnoresStaleClear(t *testing.T) {
+	m := newTestModel(t)
+	m.copyStatus = "copied 3 chars"
+	m.copySeq = 2
+	m = apply(t, m, clearCopyStatusMsg{seq: 1})
+	if m.copyStatus == "" {
+		t.Fatal("stale clear removed status")
+	}
+	m = apply(t, m, clearCopyStatusMsg{seq: 2})
+	if m.copyStatus != "" {
+		t.Fatalf("current clear left status %q", m.copyStatus)
 	}
 }
 

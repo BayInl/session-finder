@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -36,15 +38,20 @@ type showMsg struct {
 	err       error
 }
 
+type clearCopyStatusMsg struct {
+	seq uint64
+}
+
 // Model is the Bubble Tea root model for the session-finder TUI.
 type Model struct {
-	store  Backend
-	theme  ui.Theme
-	color  bool
-	keys   keyMap
-	limit  int
-	width  int
-	height int
+	store     Backend
+	clipboard clipboardWriter
+	theme     ui.Theme
+	color     bool
+	keys      keyMap
+	limit     int
+	width     int
+	height    int
 
 	query     string
 	tool      string
@@ -59,11 +66,15 @@ type Model struct {
 	input    textinput.Model
 	help     help.Model
 
-	focus     pane
-	searching bool
-	showHelp  bool
-	loadedID  string
-	detail    []ui.ShowMessage
+	focus            pane
+	searching        bool
+	showHelp         bool
+	loadedID         string
+	detail           []ui.ShowMessage
+	detailIndex      int
+	detailHeaderLine int
+	copyStatus       string
+	copySeq          uint64
 }
 
 // New constructs a TUI model. Size messages are not required; tests pass fake sizes via Update.
@@ -84,6 +95,7 @@ func New(cfg Config, store Backend, w io.Writer) Model {
 	}
 	m := Model{
 		store:     store,
+		clipboard: newSystemClipboard(),
 		theme:     theme,
 		color:     color,
 		keys:      newKeyMap(),
@@ -185,7 +197,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		m.loadedID = msg.sessionID
 		m.detail = ui.MessagesFromRows(msg.rows)
+		m.detailIndex = 0
 		m.refreshDetail()
+		return m, nil
+
+	case clipboardResultMsg:
+		if msg.seq != m.copySeq {
+			return m, nil
+		}
+		m.setCopyStatus(msg.chars, msg.truncated, msg.err)
+		return m, m.clearCopyStatusCmd(msg.seq)
+
+	case clearCopyStatusMsg:
+		if msg.seq == m.copySeq {
+			m.copyStatus = ""
+		}
 		return m, nil
 
 	case tea.MouseWheelMsg:
@@ -292,6 +318,16 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.focus = paneDetail
 		return m, m.startShow(hit.SessionID)
+	case bindingHit(msg, m.keys.Yank):
+		if !m.hasLoadedDetail() {
+			return m, nil
+		}
+		return m.copyText(m.detail[m.detailIndex].Text)
+	case bindingHit(msg, m.keys.YankAll):
+		if !m.hasLoadedDetail() {
+			return m, nil
+		}
+		return m.copyText(m.transcriptText())
 	case bindingHit(msg, m.keys.PageUp):
 		if m.focus == paneDetail {
 			m.viewport.PageUp()
@@ -322,13 +358,18 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case bindingHit(msg, m.keys.Top):
 		if m.focus == paneDetail {
-			m.viewport.GotoTop()
+			m.detailIndex = 0
+			m.refreshDetail()
 		} else {
 			m.selectList(0)
 		}
 		return m, nil
 	case bindingHit(msg, m.keys.Bottom):
 		if m.focus == paneDetail {
+			if len(m.detail) > 0 {
+				m.detailIndex = len(m.detail) - 1
+			}
+			m.refreshDetail()
 			m.viewport.GotoBottom()
 		} else if n := len(m.list.Items()); n > 0 {
 			m.selectList(n - 1)
@@ -336,14 +377,14 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case bindingHit(msg, m.keys.Up):
 		if m.focus == paneDetail {
-			m.viewport.ScrollUp(1)
+			m.moveDetail(-1)
 		} else {
 			m.moveList(-1)
 		}
 		return m, nil
 	case bindingHit(msg, m.keys.Down):
 		if m.focus == paneDetail {
-			m.viewport.ScrollDown(1)
+			m.moveDetail(1)
 		} else {
 			m.moveList(1)
 		}
@@ -429,6 +470,11 @@ func (m Model) listPageSize() int {
 	return maxInt(1, m.list.Height())
 }
 
+func (m Model) hasLoadedDetail() bool {
+	hit := m.selectedHit()
+	return m.focus == paneDetail && hit != nil && m.loadedID == hit.SessionID && len(m.detail) > 0 && m.detailIndex >= 0 && m.detailIndex < len(m.detail)
+}
+
 func (m *Model) moveList(delta int) {
 	items := m.list.Items()
 	if len(items) == 0 || delta == 0 {
@@ -442,6 +488,20 @@ func (m *Model) moveList(delta int) {
 		index = len(items) - 1
 	}
 	m.selectList(index)
+}
+
+func (m *Model) moveDetail(delta int) {
+	if len(m.detail) == 0 || delta == 0 {
+		return
+	}
+	m.detailIndex += delta
+	if m.detailIndex < 0 {
+		m.detailIndex = 0
+	}
+	if m.detailIndex >= len(m.detail) {
+		m.detailIndex = len(m.detail) - 1
+	}
+	m.refreshDetail()
 }
 
 func (m *Model) selectList(index int) {
@@ -483,8 +543,63 @@ func (m Model) paneSizes() (leftW, rightW, midH int) {
 }
 
 func (m *Model) refreshDetail() {
-	m.viewport.SetContent(m.detailContent())
+	content, headerLine := m.detailContentWithHeaderLine()
+	m.detailHeaderLine = headerLine
+	m.viewport.SetContent(content)
 	m.viewport.GotoTop()
+	if !m.hasLoadedDetail() || m.detailIndex == 0 || headerLine < 0 {
+		return
+	}
+	m.viewport.SetYOffset(maxInt(0, headerLine-m.viewport.Height()/2))
+}
+
+func (m Model) copyText(text string) (tea.Model, tea.Cmd) {
+	if m.clipboard == nil || text == "" {
+		return m, nil
+	}
+	m.copySeq++
+	seq := m.copySeq
+	plan := m.clipboard.Copy(text, seq)
+	if plan.cmd == nil {
+		return m, nil
+	}
+	if plan.async {
+		return m, plan.cmd
+	}
+	m.setCopyStatus(plan.chars, plan.truncated, nil)
+	return m, tea.Sequence(plan.cmd, m.clearCopyStatusCmd(seq))
+}
+
+func (m *Model) setCopyStatus(chars int, truncated bool, err error) {
+	if err != nil {
+		m.copyStatus = "copy failed: " + err.Error()
+		return
+	}
+	m.copyStatus = "copied " + fmt.Sprint(chars) + " chars"
+	if truncated {
+		m.copyStatus += " (truncated)"
+	}
+}
+
+func (m Model) clearCopyStatusCmd(seq uint64) tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+		return clearCopyStatusMsg{seq: seq}
+	})
+}
+
+func (m Model) transcriptText() string {
+	var b strings.Builder
+	for i, row := range m.detail {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		if row.Role != "" {
+			b.WriteString(row.Role)
+			b.WriteString(":\n")
+		}
+		b.WriteString(row.Text)
+	}
+	return b.String()
 }
 
 func nextTool(current string) string {
