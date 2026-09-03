@@ -117,6 +117,11 @@ func (r *Repository) CreateBundle(ctx context.Context, bundle CandidateBundle, a
 	if err := ValidateSlug(bundle.Slug); err != nil {
 		return extract.Candidate{}, err
 	}
+	unlock, err := acquirePendingLock(ctx, r.store.Path())
+	if err != nil {
+		return extract.Candidate{}, err
+	}
+	defer unlock()
 	payload, err := CandidatePayload(bundle)
 	if err != nil {
 		return extract.Candidate{}, err

@@ -170,7 +170,55 @@ func ExtractAndPersist(ctx context.Context, store *extract.Store, messages []rec
 	return ExtractAndPersistWithOptions(ctx, store, messages, actor, ExtractOptions{})
 }
 
-func persistTranscript(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string, options ExtractOptions) ([]extract.Candidate, error) {
+type candidateSlugAllocator struct {
+	used map[string]bool
+	next map[string]int
+}
+
+func newCandidateSlugAllocator(candidates []extract.Candidate) *candidateSlugAllocator {
+	allocator := &candidateSlugAllocator{
+		used: make(map[string]bool, len(candidates)),
+		next: make(map[string]int),
+	}
+	for _, candidate := range candidates {
+		existing, err := BundleFromCandidate(candidate)
+		if err == nil && existing.Slug != "" {
+			allocator.used[existing.Slug] = true
+		}
+	}
+	return allocator
+}
+
+func loadCandidateSlugAllocator(ctx context.Context, store *extract.Store) (*candidateSlugAllocator, error) {
+	candidates, err := store.List(ctx, extract.ListOptions{Kind: defaultCandidateKind, IncludeDeleted: true})
+	if err != nil {
+		return nil, err
+	}
+	return newCandidateSlugAllocator(candidates), nil
+}
+
+func (a *candidateSlugAllocator) unique(bundle CandidateBundle) CandidateBundle {
+	base := bundle.Slug
+	if !a.used[base] {
+		a.used[base] = true
+		a.next[base] = 2
+		return bundle
+	}
+	sequence := max(2, a.next[base])
+	for ; ; sequence++ {
+		suffix := fmt.Sprintf("-%d", sequence)
+		limit := 64 - len(suffix)
+		candidateSlug := strings.Trim(base[:min(len(base), limit)], "-") + suffix
+		if !a.used[candidateSlug] {
+			bundle.Slug = candidateSlug
+			a.used[candidateSlug] = true
+			a.next[base] = sequence + 1
+			return bundle
+		}
+	}
+}
+
+func buildTranscriptBundles(ctx context.Context, messages []record.MessageRecord, options ExtractOptions) ([]CandidateBundle, error) {
 	split := SplitTranscriptDetailed(ctx, messages, options.Segmenter)
 	if len(split.Slices) == 0 {
 		return nil, ErrNoTranscript
@@ -181,21 +229,54 @@ func persistTranscript(ctx context.Context, store *extract.Store, messages []rec
 	options.Segmenter = nil
 	options.ConversationContext = messages
 	options.SegmentObservations = split.Observations
-	created := make([]extract.Candidate, 0, len(split.Slices))
+	bundles := make([]CandidateBundle, 0, len(split.Slices))
 	for _, slice := range split.Slices {
-		_, candidate, err := ExtractAndPersistWithOptions(ctx, store, slice, actor, options)
+		bundle, err := BuildCandidateWithOptions(slice, options)
 		if errors.Is(err, ErrNoTranscript) {
 			continue
 		}
 		if err != nil {
+			return nil, err
+		}
+		if bundle.SessionID == "" && len(slice) > 0 {
+			bundle.SessionID = slice[0].SessionID
+		}
+		bundles = append(bundles, bundle)
+	}
+	if len(bundles) == 0 {
+		return nil, ErrNoTranscript
+	}
+	return bundles, nil
+}
+
+func persistTranscript(ctx context.Context, store *extract.Store, messages []record.MessageRecord, actor string, options ExtractOptions) ([]extract.Candidate, error) {
+	if store == nil {
+		return nil, errors.New("nil candidate store")
+	}
+	bundles, err := buildTranscriptBundles(ctx, messages, options)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := acquirePendingLock(ctx, store.Path())
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	allocator, err := loadCandidateSlugAllocator(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	return persistCandidateBundles(ctx, store, bundles, actor, allocator)
+}
+
+func persistCandidateBundles(ctx context.Context, store *extract.Store, bundles []CandidateBundle, actor string, allocator *candidateSlugAllocator) ([]extract.Candidate, error) {
+	created := make([]extract.Candidate, 0, len(bundles))
+	for _, bundle := range bundles {
+		_, candidate, err := persistCandidateBundle(ctx, store, bundle, actor, allocator)
+		if err != nil {
 			return created, err
 		}
-		if candidate.ID != "" {
-			created = append(created, candidate)
-		}
-	}
-	if len(created) == 0 {
-		return nil, ErrNoTranscript
+		created = append(created, candidate)
 	}
 	return created, nil
 }
@@ -213,10 +294,30 @@ func ExtractAndPersistWithOptions(ctx context.Context, store *extract.Store, mes
 	if bundle.SessionID == "" && len(messages) > 0 {
 		bundle.SessionID = messages[0].SessionID
 	}
-	bundle, err = withUniqueCandidateSlug(ctx, store, bundle)
+	unlock, err := acquirePendingLock(ctx, store.Path())
 	if err != nil {
 		return bundle, extract.Candidate{}, err
 	}
+	defer unlock()
+	allocator, err := loadCandidateSlugAllocator(ctx, store)
+	if err != nil {
+		return bundle, extract.Candidate{}, err
+	}
+	return persistCandidateBundle(ctx, store, bundle, actor, allocator)
+}
+
+func persistCandidateBundle(ctx context.Context, store *extract.Store, bundle CandidateBundle, actor string, allocator *candidateSlugAllocator) (CandidateBundle, extract.Candidate, error) {
+	if store == nil {
+		return bundle, extract.Candidate{}, errors.New("nil candidate store")
+	}
+	if allocator == nil {
+		var err error
+		allocator, err = loadCandidateSlugAllocator(ctx, store)
+		if err != nil {
+			return bundle, extract.Candidate{}, err
+		}
+	}
+	bundle = allocator.unique(bundle)
 	payload, payloadErr := CandidatePayload(bundle)
 	if payloadErr != nil {
 		return bundle, extract.Candidate{}, payloadErr
@@ -249,33 +350,6 @@ func ExtractAndPersistWithOptions(ctx context.Context, store *extract.Store, mes
 		return bundle, extract.Candidate{}, createErr
 	}
 	return bundle, candidate, nil
-}
-
-func withUniqueCandidateSlug(ctx context.Context, store *extract.Store, bundle CandidateBundle) (CandidateBundle, error) {
-	candidates, err := store.List(ctx, extract.ListOptions{Kind: defaultCandidateKind, IncludeDeleted: true})
-	if err != nil {
-		return bundle, err
-	}
-	used := make(map[string]bool, len(candidates))
-	for _, candidate := range candidates {
-		existing, decodeErr := BundleFromCandidate(candidate)
-		if decodeErr == nil && existing.Slug != "" {
-			used[existing.Slug] = true
-		}
-	}
-	if !used[bundle.Slug] {
-		return bundle, nil
-	}
-	base := bundle.Slug
-	for sequence := 2; ; sequence++ {
-		suffix := fmt.Sprintf("-%d", sequence)
-		limit := 64 - len(suffix)
-		candidateSlug := strings.Trim(base[:min(len(base), limit)], "-") + suffix
-		if !used[candidateSlug] {
-			bundle.Slug = candidateSlug
-			return bundle, nil
-		}
-	}
 }
 
 // persistSkippedSession records a session that contains only filtered/system
@@ -423,14 +497,22 @@ func PendingSessions(ctx context.Context, indexDBPath, candidateDBPath string, o
 		return nil, err
 	}
 	defer store.Close()
+	queued, err := listSkillCandidates(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	return pendingSessions(ctx, indexDB, queued, options)
+}
+
+func listSkillCandidates(ctx context.Context, store *extract.Store) ([]extract.Candidate, error) {
 	// IncludeDeleted keeps recoverably deleted candidates in the seen set. A
 	// deletion does not mean the source session should be regenerated; callers
 	// should restore and review the existing candidate instead of relying on
 	// pending scans to create duplicates.
-	queued, err := store.List(ctx, extract.ListOptions{Kind: defaultCandidateKind, IncludeDeleted: true})
-	if err != nil {
-		return nil, err
-	}
+	return store.List(ctx, extract.ListOptions{Kind: defaultCandidateKind, IncludeDeleted: true})
+}
+
+func pendingSessions(ctx context.Context, indexDB *sql.DB, queued []extract.Candidate, options ExtractOptions) ([]PendingSession, error) {
 	seen := map[string]bool{}
 	seenSession := map[string]bool{}
 	for _, candidate := range queued {
@@ -499,6 +581,12 @@ func ScanPending(ctx context.Context, options ExtractOptions) ([]PendingSession,
 	return PendingSessions(ctx, options.IndexDBPath, options.CandidateDBPath, options)
 }
 
+type pendingTranscriptKey struct {
+	tool      string
+	sessionID string
+	cwd       string
+}
+
 // ExtractPending performs the compensation scan and queues each unprocessed
 // session. It returns both the discovered sessions and created candidates.
 func ExtractPending(ctx context.Context, options ExtractOptions) ([]PendingSession, []extract.Candidate, error) {
@@ -514,44 +602,106 @@ func ExtractPending(ctx context.Context, options ExtractOptions) ([]PendingSessi
 	if candidatePath == "" {
 		candidatePath = options.IndexDBPath
 	}
+	unlock, err := acquirePendingLock(ctx, candidatePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer unlock()
 	store, err := extract.Open(candidatePath)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer store.Close()
-	pending, err := PendingSessions(ctx, options.IndexDBPath, candidatePath, options)
+	queued, err := listSkillCandidates(ctx, store)
 	if err != nil {
 		return nil, nil, err
 	}
+	pending, err := pendingSessions(ctx, indexDB, queued, options)
+	if err != nil {
+		return nil, nil, err
+	}
+	allocator := newCandidateSlugAllocator(queued)
+	remaining := make(map[pendingTranscriptKey]int)
+	for _, session := range pending {
+		remaining[pendingTranscriptKey{tool: session.Tool, sessionID: session.SessionID, cwd: session.CWD}]++
+	}
+	messageCache := make(map[pendingTranscriptKey][]record.MessageRecord)
+	bundleCache := make(map[pendingTranscriptKey][]CandidateBundle)
+	cacheBundles := canCachePendingBundles(options)
+	emptyCache := make(map[pendingTranscriptKey]bool)
 	created := make([]extract.Candidate, 0, len(pending))
 	for _, session := range pending {
-		messages, loadErr := IndexToolSessionMessages(ctx, indexDB, session.Tool, session.SessionID, session.CWD, options.After)
-		if loadErr != nil {
-			return pending, created, loadErr
+		key := pendingTranscriptKey{tool: session.Tool, sessionID: session.SessionID, cwd: session.CWD}
+		messages, loaded := messageCache[key]
+		empty := emptyCache[key]
+		if !loaded && !empty {
+			messages, err = IndexToolSessionMessages(ctx, indexDB, key.tool, key.sessionID, key.cwd, options.After)
+			if err != nil {
+				return pending, created, err
+			}
+			if len(messages) == 0 {
+				empty = true
+				if remaining[key] > 1 {
+					emptyCache[key] = true
+				}
+			} else if remaining[key] > 1 {
+				messageCache[key] = messages
+			}
 		}
-		if len(messages) == 0 {
+		bundles, cached := bundleCache[key]
+		if !empty && (!cacheBundles || !cached) {
+			bundles, err = buildTranscriptBundles(ctx, messages, options)
+			if errors.Is(err, ErrNoTranscript) {
+				empty = true
+				if remaining[key] > 1 {
+					emptyCache[key] = true
+				}
+			} else if err != nil {
+				return pending, created, err
+			} else if cacheBundles && remaining[key] > 1 {
+				bundleCache[key] = bundles
+				delete(messageCache, key)
+			}
+		}
+		if empty {
 			candidate, skipErr := persistSkippedSession(ctx, store, session, options.Actor)
 			if skipErr != nil {
 				return pending, created, skipErr
 			}
 			created = append(created, candidate)
+			releasePendingCache(key, remaining, messageCache, bundleCache, emptyCache)
 			continue
 		}
-		candidates, persistErr := persistTranscript(ctx, store, messages, options.Actor, options)
-		if errors.Is(persistErr, ErrNoTranscript) {
-			candidate, skipErr := persistSkippedSession(ctx, store, session, options.Actor)
-			if skipErr != nil {
-				return pending, created, skipErr
-			}
-			created = append(created, candidate)
-			continue
-		}
+		candidates, persistErr := persistCandidateBundles(ctx, store, bundles, options.Actor, allocator)
 		if persistErr != nil {
 			return pending, created, persistErr
 		}
 		created = append(created, candidates...)
+		releasePendingCache(key, remaining, messageCache, bundleCache, emptyCache)
 	}
 	return pending, created, nil
+}
+
+func canCachePendingBundles(options ExtractOptions) bool {
+	if options.Judge != nil {
+		return false
+	}
+	if options.Segmenter == nil {
+		return true
+	}
+	_, unavailable := options.Segmenter.(unavailableSegmenter)
+	return unavailable
+}
+
+func releasePendingCache(key pendingTranscriptKey, remaining map[pendingTranscriptKey]int, messages map[pendingTranscriptKey][]record.MessageRecord, bundles map[pendingTranscriptKey][]CandidateBundle, empty map[pendingTranscriptKey]bool) {
+	remaining[key]--
+	if remaining[key] > 0 {
+		return
+	}
+	delete(remaining, key)
+	delete(messages, key)
+	delete(bundles, key)
+	delete(empty, key)
 }
 
 // SortPending returns deterministic ordering for callers that merge scans.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BayInl/session-finder/internal/extract"
@@ -464,6 +465,147 @@ func TestExtractPendingCreatesOneCandidatePerSegment(t *testing.T) {
 	}
 	if len(created) != 2 {
 		t.Fatalf("created = %d want 2: %#v", len(created), created)
+	}
+}
+
+func TestIndexToolSessionMessagesPreservesPrefixMatching(t *testing.T) {
+	indexPath := filepath.Join(t.TempDir(), "index.db")
+	db, err := index.Open(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := index.InitializeSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO sessions(id, tool, session_id, cwd, title, created, updated, source_path)
+		VALUES (1, 'codex', 'abc', '/tmp/project', 'Exact', 1704067200, 1704067200, '/tmp/exact.jsonl'),
+		       (2, 'codex', 'ABC-child', '/tmp/project', 'Case prefix', 1704067200, 1704067200, '/tmp/case.jsonl'),
+		       (3, 'codex', 'abc_extra', '/tmp/project', 'Underscore', 1704067200, 1704067200, '/tmp/underscore.jsonl'),
+		       (4, 'codex', 'abc%extra', '/tmp/project', 'Percent', 1704067200, 1704067200, '/tmp/percent.jsonl'),
+		       (5, 'codex', 'abc\\extra', '/tmp/project', 'Backslash', 1704067200, 1704067200, '/tmp/backslash.jsonl');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES
+		       (1, 'user', 1704067201, 'exact'),
+		       (2, 'user', 1704067202, 'case prefix'),
+		       (3, 'user', 1704067203, 'underscore'),
+		       (4, 'user', 1704067204, 'percent'),
+		       (5, 'user', 1704067205, 'backslash');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sessionID, want := range map[string]int{"abc": 5, "abc_": 1, "abc%": 1, `abc\`: 1} {
+		got, err := IndexToolSessionMessages(context.Background(), db, "codex", sessionID, "/tmp/project", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != want {
+			t.Fatalf("session %q matched %d messages, want %d: %#v", sessionID, len(got), want, got)
+		}
+	}
+}
+
+func TestExtractPendingPreservesDuplicateLogicalSessionCandidates(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "index.db")
+	candidatePath := filepath.Join(root, "candidates.db")
+	db, err := index.Open(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.InitializeSchema(db); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO sessions(id, tool, session_id, cwd, title, created, updated, source_path)
+		VALUES (1, 'kimi-code', 'parent-session', '', 'Parent', 1704067200, 1704067300, '/tmp/agent-1.jsonl'),
+		       (2, 'kimi-code', 'parent-session', '', 'Parent', 1704067100, 1704067200, '/tmp/agent-2.jsonl');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES
+		       (1, 'user', 1704067201, 'Document the release workflow.'),
+		       (1, 'assistant', 1704067202, 'Run go test ./...; then build the release artifact.'),
+		       (2, 'user', 1704067203, 'Looks good, approved. go test ./... passed.');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pending, created, err := ExtractPending(context.Background(), ExtractOptions{IndexDBPath: indexPath, CandidateDBPath: candidatePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 || len(created) != 2 {
+		t.Fatalf("pending=%d created=%d, want one candidate per indexed source row", len(pending), len(created))
+	}
+	first, err := BundleFromCandidate(created[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := BundleFromCandidate(created[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Slug != first.Slug+"-2" {
+		t.Fatalf("slugs = %q, %q, want stable duplicate numbering", first.Slug, second.Slug)
+	}
+	first.Slug = ""
+	second.Slug = ""
+	if fmt.Sprintf("%#v", first) != fmt.Sprintf("%#v", second) {
+		t.Fatalf("duplicate logical session bundles differ:\nfirst=%#v\nsecond=%#v", first, second)
+	}
+}
+
+func TestExtractPendingSerializesConcurrentScans(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "index.db")
+	candidatePath := filepath.Join(root, "candidates.db")
+	db, err := index.Open(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.InitializeSchema(db); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO sessions(id, tool, session_id, cwd, title, created, updated, source_path)
+		VALUES (1, 'codex', 'concurrent-session', '/tmp/project', 'Release workflow', 1704067200, 1704067203, '/tmp/session.jsonl');
+		INSERT INTO messages(session_pk, role, ts, text) VALUES
+		       (1, 'user', 1704067201, 'Document the release workflow.'),
+		       (1, 'assistant', 1704067202, 'Run go test ./...; then build the release artifact.'),
+		       (1, 'user', 1704067203, 'Looks good, approved. go test ./... passed.');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		pending int
+		created int
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for range 2 {
+		go func() {
+			ready.Done()
+			<-start
+			pending, created, err := ExtractPending(context.Background(), ExtractOptions{IndexDBPath: indexPath, CandidateDBPath: candidatePath})
+			results <- result{pending: len(pending), created: len(created), err: err}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent errors = %v, %v", first.err, second.err)
+	}
+	if first.created+second.created != 1 || first.pending+second.pending != 1 {
+		t.Fatalf("results = %+v, %+v, want one serialized extraction", first, second)
 	}
 }
 
