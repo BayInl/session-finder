@@ -156,3 +156,25 @@ func TestConsequenceChoiceCleansMarkdownFragments(t *testing.T) {
 		}
 	}
 }
+
+func TestComparisonChoiceAllowsNoCommaAndStopsAtSentenceBoundary(t *testing.T) {
+	for _, testCase := range []struct {
+		text        string
+		chosen      string
+		alternative string
+	}{
+		{"使用 SQLite 而非 Postgres，因为部署更简单。", "SQLite", "Postgres"},
+		{"推荐 SQLite 而不是 Postgres，因为部署更简单。", "SQLite", "Postgres"},
+	} {
+		options, chosen := extractOptions(testCase.text)
+		if chosen != testCase.chosen || len(options) != 2 || options[1] != testCase.alternative {
+			t.Errorf("comparison %q = options %#v chosen %q", testCase.text, options, chosen)
+		}
+	}
+
+	text := "建议先评估 SQLite。下一句说明背景，而非 Postgres，因为部署更简单。"
+	options, chosen := extractOptions(text)
+	if chosen != "" || len(options) != 0 {
+		t.Fatalf("comparison crossed sentence boundary: options %#v chosen %q", options, chosen)
+	}
+}

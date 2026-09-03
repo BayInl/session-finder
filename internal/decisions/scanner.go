@@ -34,7 +34,7 @@ var (
 	choiceSeparatorRE         = regexp.MustCompile(`(?i)\s+(?:or|或者)\s+|或者|、|\s+/\s+`)
 	insteadRE                 = regexp.MustCompile(`(?is)\binstead of\s+(.+?)(?:,|;|\s+(?:use|choose|pick|adopt|go with)\s+)(.+?)(?:[.!?]|$)|(?:不使用|不要)\s*(.+?)(?:(?:，|,|；|;)\s*(?:改用|换成|改为|使用)|\s+(?:改用|换成|改为))\s*(.+?)(?:[。！？!?]|$)`)
 	chooseOverRE              = regexp.MustCompile(`(?is)\b(?:choose|pick|select|prefer|use|adopt|go with)\b\s+(.+?)\s+(?:over|rather than|instead of)\s+(.+?)(?:\s+because\b|[.!?]|$)`)
-	comparisonRE              = regexp.MustCompile(`(?is)^\s*(?:(?:我|我们)\s*)?(?:(?:建议|推荐)(?:使用|用)?|使用|采用|选择|改用)\s*(.{1,120}?)\s*[,，]\s*(?:不使用|不用|而非|而不是)\s*([^!?\n。！？]{1,120})|^\s*([^.!?\n，。！？]{1,120}?)\s+(?:而非|而不是)\s+([^.!?\n，。！？]{1,120})`)
+	comparisonRE              = regexp.MustCompile(`(?is)^\s*(?:(?:我|我们)\s*)?(?:(?:建议|推荐)(?:使用|用)?|使用|采用|选择|改用)\s*([^\n。！？]{1,120}?)\s*[,，]?\s*(?:不使用|不用|而非|而不是)\s*([^\n。！？]{1,120})|^\s*([^.!?\n，。！？]{1,120}?)\s+(?:而非|而不是)\s+([^.!?\n，。！？]{1,120})`)
 	useRE                     = regexp.MustCompile(`(?is)(?:we['’]?ll use|we will use|let['’]?s use|recommend(?:ation)?|adopt|go with|choose|pick|select|^\s*(?:[-*+] |\d+[.)]\s+)?use|采用|改用|使用|选择|建议|推荐)\s+([^.!?\n，。！？]{1,120})`)
 	leadingUseRE              = regexp.MustCompile(`(?is)^\s*use\s+([^.!?\n，。！？]{1,120})`)
 	genericChoicePrefixRE     = regexp.MustCompile(`(?i)^(?:a|an|the|this|that|it|one|some|any|no|not)\s+`)
