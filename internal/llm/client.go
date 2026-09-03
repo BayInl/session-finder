@@ -5,10 +5,13 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,16 +20,32 @@ const (
 	ProviderOpenAI  = "openai"
 )
 
-// Config controls provider selection. Empty Provider means offline, except
-// when all OpenAI environment values are explicitly present in NewFromEnv.
+// Config controls provider selection and bounds online use. Empty Provider is
+// always offline when passed to New. Zero budget values use conservative
+// defaults; negative MaxCalls/MaxTotalTokens disable those two budgets.
 type Config struct {
-	Provider   string
-	BaseURL    string
-	APIKey     string
-	Model      string
-	HTTPClient *http.Client
-	Timeout    time.Duration
-	MaxRetries int // extra attempts after the first; 0 means 2, negative means none
+	Provider        string
+	BaseURL         string
+	APIKey          string
+	Model           string
+	HTTPClient      *http.Client
+	Timeout         time.Duration
+	MaxRetries      int // extra attempts after the first; 0 means 2, negative means none
+	MaxRequestBytes int // serialized request limit; 0 uses the default
+	MaxOutputTokens int // maximum tokens requested from one completion; 0 uses the default
+	MaxCalls        int // provider HTTP call budget; 0 uses the default, negative disables it
+	MaxTotalTokens  int // aggregate token budget; 0 uses the default, negative disables it
+}
+
+// UsageStats reports provider requests and token usage for one client. When a
+// compatible endpoint omits usage, TotalTokens contains a conservative estimate.
+type UsageStats struct {
+	Calls           int64 `json:"calls"`
+	SuccessfulCalls int64 `json:"successful_calls"`
+	InputTokens     int64 `json:"input_tokens"`
+	OutputTokens    int64 `json:"output_tokens"`
+	TotalTokens     int64 `json:"total_tokens"`
+	EstimatedCalls  int64 `json:"estimated_calls"`
 }
 
 // Message is a redacted transcript message sent to a provider.
@@ -78,27 +97,48 @@ func New(config Config) (Client, error) {
 	}
 }
 
-// NewFromEnv selects the provider from environment. It remains offline unless
-// SESSION_FINDER_LLM_PROVIDER/LLM_PROVIDER is set to openai, or the complete
-// OpenAI tuple (base URL, key, model) is present.
+// NewFromEnv selects the provider from environment. Automatic online selection
+// only considers SESSION_FINDER_LLM_* variables. Legacy generic variables are
+// accepted only after an explicit provider opt-in and emit one process warning.
 func NewFromEnv() (Client, error) {
-	provider := firstEnv("SESSION_FINDER_LLM_PROVIDER", "LLM_PROVIDER")
-	baseURL := firstEnv("SESSION_FINDER_LLM_BASE_URL", "OPENAI_BASE_URL", "LLM_BASE_URL")
-	apiKey := firstEnv("SESSION_FINDER_LLM_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "CLIRELAY_API_KEY")
-	model := firstEnv("SESSION_FINDER_LLM_MODEL", "OPENAI_MODEL", "LLM_MODEL")
-	if provider == "" && baseURL != "" && apiKey != "" && model != "" {
+	provider, providerSource := firstEnvSource("SESSION_FINDER_LLM_PROVIDER", "LLM_PROVIDER")
+	explicitProvider := provider != ""
+
+	baseURL, baseSource := firstEnvSource("SESSION_FINDER_LLM_BASE_URL")
+	apiKey, keySource := firstEnvSource("SESSION_FINDER_LLM_API_KEY")
+	model, modelSource := firstEnvSource("SESSION_FINDER_LLM_MODEL")
+	if !explicitProvider && baseURL != "" && apiKey != "" && model != "" {
 		provider = ProviderOpenAI
 	}
 	if provider == "" {
 		provider = ProviderOffline
 	}
-	var timeout time.Duration
-	if raw := firstEnv("SESSION_FINDER_LLM_TIMEOUT"); raw != "" {
-		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
-			timeout = time.Duration(seconds) * time.Second
+	if explicitProvider && strings.EqualFold(strings.TrimSpace(provider), ProviderOpenAI) {
+		if baseURL == "" {
+			baseURL, baseSource = firstEnvSource("OPENAI_BASE_URL", "LLM_BASE_URL")
+		}
+		if apiKey == "" {
+			apiKey, keySource = firstEnvSource("OPENAI_API_KEY", "LLM_API_KEY", "CLIRELAY_API_KEY")
+		}
+		if model == "" {
+			model, modelSource = firstEnvSource("OPENAI_MODEL", "LLM_MODEL")
+		}
+		if isLegacyEnv(providerSource) || isLegacyEnv(baseSource) || isLegacyEnv(keySource) || isLegacyEnv(modelSource) {
+			warnLegacyEnv()
 		}
 	}
-	return New(Config{Provider: provider, BaseURL: baseURL, APIKey: apiKey, Model: model, Timeout: timeout})
+
+	return New(Config{
+		Provider:        provider,
+		BaseURL:         baseURL,
+		APIKey:          apiKey,
+		Model:           model,
+		Timeout:         envDurationSeconds("SESSION_FINDER_LLM_TIMEOUT"),
+		MaxRequestBytes: envPositiveInt("SESSION_FINDER_LLM_MAX_REQUEST_BYTES"),
+		MaxOutputTokens: envPositiveInt("SESSION_FINDER_LLM_MAX_OUTPUT_TOKENS"),
+		MaxCalls:        envPositiveInt("SESSION_FINDER_LLM_MAX_CALLS"),
+		MaxTotalTokens:  envPositiveInt("SESSION_FINDER_LLM_MAX_TOTAL_TOKENS"),
+	})
 }
 
 // Default returns the environment-selected client. Misconfigured opt-in
@@ -111,13 +151,44 @@ func Default() Client {
 	return client
 }
 
-func firstEnv(names ...string) string {
+func firstEnvSource(names ...string) (string, string) {
 	for _, name := range names {
 		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-			return value
+			return value, name
 		}
 	}
-	return ""
+	return "", ""
+}
+
+func envPositiveInt(name string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
+}
+
+func envDurationSeconds(name string) time.Duration {
+	seconds := envPositiveInt(name)
+	if seconds == 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func isLegacyEnv(name string) bool {
+	return name != "" && !strings.HasPrefix(name, "SESSION_FINDER_LLM_")
+}
+
+var (
+	legacyEnvWarning sync.Once
+	warningWriter    io.Writer = os.Stderr
+)
+
+func warnLegacyEnv() {
+	legacyEnvWarning.Do(func() {
+		_, _ = fmt.Fprintln(warningWriter, "warning: generic LLM environment variables are deprecated; use SESSION_FINDER_LLM_* to make transcript upload configuration explicit")
+	})
 }
 
 // IsOffline reports whether client is a no-network implementation.
@@ -129,4 +200,13 @@ func IsOffline(client Client) bool {
 		return flag.Offline()
 	}
 	return false
+}
+
+// Usage returns a snapshot of provider usage. Clients without usage tracking
+// report zero values.
+func Usage(client Client) UsageStats {
+	if reporter, ok := client.(interface{ Usage() UsageStats }); ok {
+		return reporter.Usage()
+	}
+	return UsageStats{}
 }

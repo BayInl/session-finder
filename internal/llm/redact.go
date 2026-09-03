@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -17,6 +18,8 @@ var (
 	redactUnixPathRE     = regexp.MustCompile(`(?:^|[\s"'=(])(?:file://)?(?:~/|/(?:Users|home|var/folders|private/var|tmp)/)[^\s"'<>]+`)
 	redactWinPathRE      = regexp.MustCompile(`(?i)\b[A-Z]:\\[^\s"'<>]+`)
 	redactURLCredRE      = regexp.MustCompile(`(?i)(://[^:/\s]+:)[^@\s]+@`)
+	redactURLQueryRE     = regexp.MustCompile(`(?i)([?&](?:api[_-]?key|access[_-]?key|secret|token|password|passwd)=)[^&#\s]+`)
+	redactJSONSecretRE   = regexp.MustCompile(`(?i)("[^"]*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)[^"]*"\s*:\s*)"(?:\\.|[^"\\])*"`)
 )
 
 // RedactRequest returns a deep-copied request with transcript and prompt values
@@ -29,7 +32,7 @@ func RedactRequest(request CompletionRequest) CompletionRequest {
 	}
 	result.Prompt = Redact(request.Prompt)
 	if len(request.Schema) > 0 {
-		result.Schema = append(json.RawMessage(nil), request.Schema...)
+		result.Schema = redactJSON(request.Schema)
 	}
 	return result
 }
@@ -37,6 +40,50 @@ func RedactRequest(request CompletionRequest) CompletionRequest {
 // Redact removes high-confidence secrets and personal identifiers while
 // preserving surrounding transcript structure. Replacement markers are stable
 // for deterministic tests and safe provider prompts.
+func redactJSON(data json.RawMessage) json.RawMessage {
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return json.RawMessage(Redact(string(data)))
+	}
+	value, changed := redactJSONValue(value)
+	if !changed {
+		return append(json.RawMessage(nil), data...)
+	}
+	redacted, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(Redact(string(data)))
+	}
+	return redacted
+}
+
+func redactJSONValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case string:
+		redacted := Redact(typed)
+		return redacted, redacted != typed
+	case []any:
+		changed := false
+		for index := range typed {
+			item, itemChanged := redactJSONValue(typed[index])
+			typed[index] = item
+			changed = changed || itemChanged
+		}
+		return typed, changed
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		changed := false
+		for key, item := range typed {
+			redactedKey := Redact(key)
+			redactedItem, itemChanged := redactJSONValue(item)
+			result[redactedKey] = redactedItem
+			changed = changed || redactedKey != key || itemChanged
+		}
+		return result, changed
+	default:
+		return value, false
+	}
+}
+
 func Redact(text string) string {
 	if text == "" {
 		return ""
@@ -47,7 +94,9 @@ func Redact(text string) string {
 	text = redactSlackWebhookRE.ReplaceAllString(text, "[REDACTED_TOKEN]")
 	text = redactJWTRE.ReplaceAllString(text, "[REDACTED_TOKEN]")
 	text = redactAssignmentRE.ReplaceAllString(text, "[REDACTED_SECRET]")
+	text = redactJSONSecretRE.ReplaceAllString(text, `$1"[REDACTED_SECRET]"`)
 	text = redactURLCredRE.ReplaceAllString(text, "$1[REDACTED_CREDENTIAL]@")
+	text = redactURLQueryRE.ReplaceAllString(text, "$1[REDACTED_SECRET]")
 	text = redactEmailRE.ReplaceAllString(text, "[REDACTED_EMAIL]")
 	text = redactUnixPathRE.ReplaceAllStringFunc(text, func(value string) string {
 		prefix := ""
@@ -67,4 +116,23 @@ func RedactTranscript(messages []Message) []Message {
 		result[i] = Message{Role: Redact(message.Role), Content: Redact(message.Content)}
 	}
 	return result
+}
+
+func redactURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "[REDACTED_URL]"
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	if parsed.Path != "" && parsed.Path != "/" {
+		parsed.Path = "/[REDACTED_PATH]"
+		parsed.RawPath = ""
+	}
+	return parsed.String()
 }

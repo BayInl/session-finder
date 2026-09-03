@@ -206,17 +206,33 @@ sfind skill list
 
 Quality gates suppress one-off or low-evidence sessions automatically, and
 publishing never overwrites an existing skill of the same name. Extraction
-runs fully offline by default. An OpenAI-compatible endpoint (including a
-Codex CLI relay) can opt in to intent segmentation and candidate judging:
+runs fully offline by default. To opt in to sending redacted transcript excerpts
+to an OpenAI-compatible endpoint (including a Codex CLI relay), configure the
+session-finder-specific variables:
 
 ```sh
+export SESSION_FINDER_LLM_PROVIDER="openai"
 export SESSION_FINDER_LLM_BASE_URL="https://relay.example:13444/v1"
 export SESSION_FINDER_LLM_API_KEY="$CLIRELAY_API_KEY"
 export SESSION_FINDER_LLM_MODEL="gpt-5.6-luna"
 sfind skill extract --pending --segment auto --judge auto
 ```
 
-Secrets and paths are redacted before any request leaves the machine.
+Only a complete `SESSION_FINDER_LLM_*` tuple auto-enables the online provider.
+Generic `OPENAI_*` / `LLM_*` variables and `CLIRELAY_API_KEY` never silently
+enable transcript upload. They are accepted only with an explicit
+`SESSION_FINDER_LLM_PROVIDER=openai` (or legacy `LLM_PROVIDER=openai`) opt-in,
+and any legacy variable use produces a one-time deprecation warning. Provider URLs must use HTTPS, except for loopback
+`localhost`, `127.0.0.1`, or `::1` development endpoints.
+
+Secrets, personal identifiers, local paths, prompts, and schema strings are
+redacted before a request leaves the machine. Each client also defaults to a
+30-second whole-call deadline, a 1 MiB serialized request limit, 2,048 maximum
+output tokens, 16 provider calls, and 100,000 total tokens. Override these with
+`SESSION_FINDER_LLM_TIMEOUT`, `SESSION_FINDER_LLM_MAX_REQUEST_BYTES`,
+`SESSION_FINDER_LLM_MAX_OUTPUT_TOKENS`, `SESSION_FINDER_LLM_MAX_CALLS`, and
+`SESSION_FINDER_LLM_MAX_TOTAL_TOKENS`.
+
 `--segment on` / `--judge on` require a live provider; `auto` skips the LLM
 when none is configured. Segmentation splits mixed sessions into one candidate
 per user task; the judge still does not rewrite skill text.
@@ -242,7 +258,9 @@ The indexer discovers local sessions for:
 - Kimi Code
 - Claude
 
-Sessions are read locally; no transcript data is uploaded by this tool.
+Sessions are indexed and read locally. No transcript data is uploaded unless
+you explicitly enable the optional LLM provider described above; when enabled,
+only bounded, redacted excerpts needed for segmentation or judging are sent.
 
 ## License
 
