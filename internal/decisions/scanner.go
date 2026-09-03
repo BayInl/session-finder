@@ -28,11 +28,14 @@ var (
 	consequenceAfterRE        = regexp.MustCompile(`(?is)[，,；;]\s*(?:so|therefore|thus|这样|因此|所以)\s*(.+?)(?:[.!?]|$|[。！？!?])`)
 	consequenceChoiceRE       = regexp.MustCompile(`(?is)(?:(?:switch(?:ed)?\s+to|use|choose|chose|select(?:ed)?|recommend(?:ed)?|adopt(?:ed)?|go\s+with)\b\s+|(?:改用|换成|改为|转为|切换到|采用|使用|选择|推荐|建议)(?:了)?\s*)(.+)$`)
 	choiceReasonRE            = regexp.MustCompile(`(?i)\b(?:because|since|due to|so that|so|therefore|thus)\b|因为|由于|为了|便于|方便|避免|确保|以便|适合|符合|有利于|保证|防止|减少|降低|支持|这样|因此|所以`)
+	choiceRejectedTailRE      = regexp.MustCompile(`(?i)\s*(?:(?:[,;，；]\s*)?(?:do not use|don't use|not use|instead of|rather than)\b|(?:[,;，；]\s*)?(?:不使用|不用|而非|而不是))`)
+	choiceDescriptorTailRE    = regexp.MustCompile(`(?i)\s+(?:as\s+(?:the\s+)?|作为)(?:[^,，;；]{0,40})$`)
+	choiceTrailingClauseRE    = regexp.MustCompile(`[,，;；]\s*(?:because|since|due to|so that)\b|[,，;；]\s*(?:因为|由于|为了|避免|便于|确保)`)
 	choiceSeparatorRE         = regexp.MustCompile(`(?i)\s+(?:or|或者)\s+|或者|、|\s+/\s+`)
 	insteadRE                 = regexp.MustCompile(`(?is)\binstead of\s+(.+?)(?:,|;|\s+(?:use|choose|pick|adopt|go with)\s+)(.+?)(?:[.!?]|$)|(?:不使用|不要)\s*(.+?)(?:(?:，|,|；|;)\s*(?:改用|换成|改为|使用)|\s+(?:改用|换成|改为))\s*(.+?)(?:[。！？!?]|$)`)
 	chooseOverRE              = regexp.MustCompile(`(?is)\b(?:choose|pick|select|prefer|use|adopt|go with)\b\s+(.+?)\s+(?:over|rather than|instead of)\s+(.+?)(?:\s+because\b|[.!?]|$)`)
-	comparisonRE              = regexp.MustCompile(`(?is)(?:使用|采用|选择|改用|推荐|建议)\s+([^.!?\n，。！？]{1,120}?)\s*[,，]?\s*(?:而非|而不是)\s*([^.!?\n，。！？]{1,120})|^\s*([^.!?\n，。！？]{1,120}?)\s+(?:而非|而不是)\s+([^.!?\n，。！？]{1,120})`)
-	useRE                     = regexp.MustCompile(`(?is)(?:we['’]?ll use|we will use|let['’]?s use|recommend(?:ation)?|adopt|go with|choose|pick|select|采用|改用|使用|选择|建议|推荐)\s+([^.!?\n，。！？]{1,120})`)
+	comparisonRE              = regexp.MustCompile(`(?is)^\s*(?:(?:我|我们)\s*)?(?:(?:建议|推荐)(?:使用|用)?|使用|采用|选择|改用)\s*([^\n。！？]{1,120}?)\s*[,，]?\s*(?:不使用|不用|而非|而不是)\s*([^\n。！？]{1,120})|^\s*([^.!?\n，。！？]{1,120}?)\s+(?:而非|而不是)\s+([^.!?\n，。！？]{1,120})`)
+	useRE                     = regexp.MustCompile(`(?is)(?:we['’]?ll use|we will use|let['’]?s use|recommend(?:ation)?|adopt|go with|choose|pick|select|^\s*(?:[-*+] |\d+[.)]\s+)?use|采用|改用|使用|选择|建议|推荐)\s+([^.!?\n，。！？]{1,120})`)
 	leadingUseRE              = regexp.MustCompile(`(?is)^\s*use\s+([^.!?\n，。！？]{1,120})`)
 	genericChoicePrefixRE     = regexp.MustCompile(`(?i)^(?:a|an|the|this|that|it|one|some|any|no|not)\s+`)
 	genericChoiceRE           = regexp.MustCompile(`(?i)^(?:a|an|the|this|that|it|one|case|path|option|choice|solution|approach|method|way|prefix|thing|something|anything|nothing|no|not|不再|http|https?|json|api|url|token|response|request|data|annotation)$|^(?:this|that|the)\s+(?:path|option|choice|case|way)$|^(?:这个|那个|此|该)?(?:路径|方案|选项|选择|用例|案例)$`)
@@ -599,7 +602,7 @@ func extractOptions(text string) ([]string, string) {
 	if match := consequenceBeforeChoiceRE.FindStringSubmatch(trimmed); len(match) >= 3 {
 		choiceClause := strings.TrimSpace(match[2])
 		if choice := consequenceChoiceRE.FindStringSubmatch(choiceClause); len(choice) > 1 {
-			chosen := cleanChoice(choiceBeforeReason(choice[1]))
+			chosen := cleanConsequenceChoice(choiceBeforeRejectedTail(choiceBeforeReason(choice[1])))
 			return uniqueChoices([]string{chosen}), chosen
 		}
 		return extractOptions(choiceClause)
@@ -623,7 +626,7 @@ func extractOptions(text string) ([]string, string) {
 	if match := comparisonRE.FindStringSubmatch(trimmed); len(match) >= 5 {
 		chosen, alternative := "", ""
 		if match[1] != "" {
-			chosen, alternative = cleanChoice(match[1]), cleanChoice(match[2])
+			chosen, alternative = cleanComparisonChoice(match[1]), cleanComparisonAlternative(match[2])
 		} else {
 			chosen, alternative = cleanChoice(match[3]), cleanChoice(match[4])
 		}
@@ -633,18 +636,19 @@ func extractOptions(text string) ([]string, string) {
 	}
 	var choices []string
 	chosen := ""
-	if !negativeUseRE.MatchString(trimmed) {
-		rawChosen := ""
-		if match := useRE.FindStringSubmatch(trimmed); len(match) > 1 {
-			rawChosen = choiceBeforeReason(match[1])
-		} else if match := leadingUseRE.FindStringSubmatch(trimmed); len(match) > 1 {
-			rawChosen = choiceBeforeReason(match[1])
-		}
+	useMatch := useRE.FindStringSubmatchIndex(trimmed)
+	negativeMatch := negativeUseRE.FindStringIndex(trimmed)
+	if len(useMatch) >= 4 && (negativeMatch == nil || useMatch[0] < negativeMatch[0]) {
+		rawChosen := choiceBeforeRejectedTail(choiceBeforeReason(trimmed[useMatch[2]:useMatch[3]]))
 		if selectedChoices := splitChoiceValues(rawChosen); len(selectedChoices) > 1 {
 			choices = selectedChoices
 			chosen = selectedChoices[0]
 		} else {
 			chosen = cleanChoice(rawChosen)
+		}
+	} else if negativeMatch == nil {
+		if match := leadingUseRE.FindStringSubmatch(trimmed); len(match) > 1 {
+			chosen = cleanChoice(choiceBeforeRejectedTail(choiceBeforeReason(match[1])))
 		}
 	}
 	if len(choices) == 0 && chosen != "" {
@@ -700,6 +704,13 @@ func choiceBeforeReason(value string) string {
 	return value
 }
 
+func choiceBeforeRejectedTail(value string) string {
+	if location := choiceRejectedTailRE.FindStringIndex(value); location != nil {
+		value = value[:location[0]]
+	}
+	return value
+}
+
 func cleanChoice(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.Trim(value, "`\"'“”‘’()[]{}:：,，;；")
@@ -708,6 +719,27 @@ func cleanChoice(value string) string {
 		value = string([]rune(value)[:120])
 	}
 	return value
+}
+
+func cleanComparisonChoice(value string) string {
+	value = strings.TrimSpace(value)
+	if location := choiceDescriptorTailRE.FindStringIndex(value); location != nil {
+		value = value[:location[0]]
+	}
+	return cleanChoice(value)
+}
+
+func cleanComparisonAlternative(value string) string {
+	if location := choiceTrailingClauseRE.FindStringIndex(value); location != nil {
+		value = value[:location[0]]
+	}
+	return cleanChoice(value)
+}
+
+func cleanConsequenceChoice(value string) string {
+	value = cleanChoice(value)
+	value = strings.TrimRight(value, "`\"'“”‘’()[]{}:：,，;；.!?。！？")
+	return strings.TrimSpace(value)
 }
 
 func uniqueChoices(values []string) []string {

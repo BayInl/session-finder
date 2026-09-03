@@ -40,7 +40,7 @@ func TestPrecisionGateRegexes(t *testing.T) {
 		{
 			name:     "explicit choice",
 			matches:  segmentExplicitChoiceRE.MatchString,
-			positive: []string{"We chose SQLite because it is local.", "优先使用 SQLite，因为它适合本地。"},
+			positive: []string{"We chose SQLite because it is local.", "Use SQLite because it is local.", "优先使用 SQLite，因为它适合本地。", "使用 SQLite，因为它适合本地。"},
 			negative: []string{"SQLite keeps the cache local.", "SQLite 适合本地缓存。"},
 		},
 		{
@@ -101,7 +101,9 @@ func TestPrecisionGatesFilterStructuralAndNarrativeNoise(t *testing.T) {
 func TestPrecisionGatesKeepExplicitBulletChoices(t *testing.T) {
 	for _, text := range []string{
 		"- Choose SQLite because it is local.",
+		"- Use SQLite because it is local.",
 		"1. 选择 SQLite，因为它适合本地。",
+		"1. 使用 SQLite，因为它适合本地。",
 	} {
 		candidates := Scan([]record.MessageRecord{msg("s1", "user", text)})
 		if len(candidates) != 1 || candidates[0].Chosen != "SQLite" {
@@ -125,5 +127,54 @@ func TestConsequenceGatesExtractResolvedDecision(t *testing.T) {
 		if len(candidates) != 1 || candidates[0].Chosen != testCase.chosen || candidates[0].Rationale != testCase.rationale {
 			t.Errorf("consequence %q = %#v", testCase.text, candidates)
 		}
+	}
+}
+
+func TestStartsConsequenceClauseAcceptsOptionalComma(t *testing.T) {
+	for _, text := range []string{"So, use PostgreSQL.", "Therefore, adopt Redis.", "Thus, choose SQLite.", "所以，使用 SQLite。"} {
+		if !startsConsequenceClause(text) {
+			t.Errorf("consequence prefix did not match %q", text)
+		}
+	}
+	segments := splitDecisionSegments("Shared writes are required. So, use PostgreSQL.")
+	if len(segments) != 1 || segments[0].Text != "Shared writes are required. So, use PostgreSQL." {
+		t.Fatalf("consequence clause was split: %#v", segments)
+	}
+}
+
+func TestConsequenceChoiceCleansMarkdownFragments(t *testing.T) {
+	for _, testCase := range []struct {
+		text   string
+		chosen string
+	}{
+		{"本地缓存必须零配置；因此采用`SQLite`。", "SQLite"},
+		{"共享写入是必须的；所以使用`PostgreSQL`，因为它支持并发。", "PostgreSQL"},
+	} {
+		candidates := Scan([]record.MessageRecord{msg("s1", "user", testCase.text)})
+		if len(candidates) != 1 || candidates[0].Chosen != testCase.chosen {
+			t.Errorf("consequence choice %q = %#v", testCase.text, candidates)
+		}
+	}
+}
+
+func TestComparisonChoiceAllowsNoCommaAndStopsAtSentenceBoundary(t *testing.T) {
+	for _, testCase := range []struct {
+		text        string
+		chosen      string
+		alternative string
+	}{
+		{"使用 SQLite 而非 Postgres，因为部署更简单。", "SQLite", "Postgres"},
+		{"推荐 SQLite 而不是 Postgres，因为部署更简单。", "SQLite", "Postgres"},
+	} {
+		options, chosen := extractOptions(testCase.text)
+		if chosen != testCase.chosen || len(options) != 2 || options[1] != testCase.alternative {
+			t.Errorf("comparison %q = options %#v chosen %q", testCase.text, options, chosen)
+		}
+	}
+
+	text := "建议先评估 SQLite。下一句说明背景，而非 Postgres，因为部署更简单。"
+	options, chosen := extractOptions(text)
+	if chosen != "" || len(options) != 0 {
+		t.Fatalf("comparison crossed sentence boundary: options %#v chosen %q", options, chosen)
 	}
 }

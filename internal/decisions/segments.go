@@ -24,11 +24,12 @@ var (
 	segmentQuestionRE       = regexp.MustCompile(`(?i)[?？]|\b(?:is this correct|is that right|does this look right|can we use this)\b|(?:正确吗|对吗|是否正确|可以吗|行吗|是真的吗)`)
 	segmentProgressRE       = regexp.MustCompile(`(?i)\b(?:i['’]?m|i am)\s+(?:pulling|reading|checking|inspecting|reviewing|verifying|confirming|comparing|collecting|gathering|looking(?:\s+at)?)\b|\bi\s+want\s+to\s+be\s+precise\b|\b(?:i['’]?m|i am)\s+using\b[^.!?\n]{0,80}\bskill\b`)
 	segmentNegativeRE       = regexp.MustCompile(`(?i)\b(?:do not|don't|never|not|without)\s+use\b|^\s*(?:不要(?:使用|把)?|不使用|不用|未使用|没有使用|尚未使用)\b|\b(?:不会|并非|不是)\b[^。！？!?\n]{0,40}\b(?:使用|采用|选择)\b`)
-	segmentReplacementRE    = regexp.MustCompile(`(?i)\b(?:instead of|rather than)\b|[,;，；]\s*(?:use|choose|pick|adopt|go with)\b|\b(?:改用|换成|改为|转为|切换到|而非|而不是)\b`)
+	segmentReplacementRE    = regexp.MustCompile(`(?i)\b(?:instead of|rather than)\b|[,;，；]\s*(?:(?:do not|don't|not)\s+use|use|choose|pick|adopt|go with)\b|\b(?:改用|换成|改为|转为|切换到|不使用|不用|而非|而不是)\b`)
 	segmentStatusRE         = regexp.MustCompile(`(?i)^\s*(?:done|completed|implemented|built|added|created|fixed|shipped|deployed|merged|passed|approved|changes_requested|approved with risks)\b|已完成|完成了|已实现|已修复|已合并|通过|批准|搞定`)
 	segmentPredicateRE      = regexp.MustCompile(`(?i)\b(?:choose|chose|selected|select|prefer|preferred|recommend|recommended|adopt|go with|pick|we chose|we selected|we prefer|we recommend|we adopted|instead of|rather than|over)\b|选择|选用|偏好|推荐|建议|采用|取舍|替代|代替|改用|而非|而不是`)
-	segmentExplicitChoiceRE = regexp.MustCompile(`(?i)\b(?:choose|chose|selected|select|prefer|preferred|recommend|recommended|adopt|go with|pick|we chose|we selected|we prefer|we recommend|we adopted)\b|选择|选用|偏好|推荐|建议|采用|改用|更推荐|优先使用`)
+	segmentExplicitChoiceRE = regexp.MustCompile(`(?i)\b(?:choose|chose|selected|select|prefer|preferred|recommend|recommended|adopt|go with|pick|use|we chose|we selected|we prefer|we recommend|we adopted)\b|选择|选用|偏好|推荐|建议|采用|使用|改用|更推荐|优先使用`)
 	segmentBulletRE         = regexp.MustCompile(`(?m)^\s{0,3}(?:[-*+] |\d+[.)]\s+)`)
+	consequencePrefixRE     = regexp.MustCompile(`(?i)^(?:(?:so|therefore|thus)\s*[,，]?\s+|(?:这样|因此|所以)\s*[,，]?\s*)`)
 	segmentHeadingRE        = regexp.MustCompile(`(?s)^\s*(?:\*\*|__)[^\n]+(?:\*\*|__)\s*$`)
 	segmentTableRE          = regexp.MustCompile(`(?m)^\s*\|.*\|`)
 )
@@ -90,14 +91,7 @@ func isSegmentBoundary(r rune) bool {
 }
 
 func startsConsequenceClause(text string) bool {
-	text = strings.TrimSpace(text)
-	lower := strings.ToLower(text)
-	for _, prefix := range []string{"so ", "therefore ", "thus ", "这样", "因此", "所以"} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	return false
+	return consequencePrefixRE.MatchString(strings.TrimSpace(text))
 }
 
 func isUsableDecisionSegment(role, text, signalText string) bool {
