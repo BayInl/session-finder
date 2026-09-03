@@ -9,11 +9,19 @@ The old `session-finder` command name still works as an alias.
 ## Install with Homebrew
 
 ```sh
-brew install BayInl/tap/session-finder
+brew install BayInl/tap/sfind
 ```
 
-The Homebrew tap is updated from tagged GitHub releases. Pre-built binaries are
-provided for Apple Silicon macOS, Intel macOS, and Intel Linux.
+If you installed the old `session-finder` formula, migrate explicitly:
+
+```sh
+brew uninstall session-finder
+brew install BayInl/tap/sfind
+```
+
+This only changes the formula name; the `sfind` command and local index remain
+unchanged. The Homebrew tap is updated from tagged GitHub releases. Pre-built
+binaries are provided for Apple Silicon macOS, Intel macOS, and Intel Linux.
 
 ## Build from source
 
