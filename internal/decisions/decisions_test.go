@@ -428,7 +428,14 @@ func TestScanKeepsExplicitResolvedChoices(t *testing.T) {
 	}{
 		{"Choose SQLite over Postgres because SQLite keeps the MVP local.", "SQLite"},
 		{"Use SQLite instead of Postgres because tests are simpler.", "SQLite"},
+		{"Use SQLite rather than Postgres because tests are simpler.", "SQLite"},
+		{"Recommend SQLite, do not use Postgres, because tests are simpler.", "SQLite"},
 		{"推荐使用 SQLite，因为它适合本地 MVP。", "SQLite"},
+		{"建议使用 SQLite，不使用 Postgres，因为它适合本地 MVP。", "SQLite"},
+		{"建议用 SQLite，不用 Postgres，因为它适合本地 MVP。", "SQLite"},
+		{"建议使用 SQLite，而非 Postgres，因为它适合本地 MVP。", "SQLite"},
+		{"建议使用 SQLite，而不是 Postgres，因为它适合本地 MVP。", "SQLite"},
+		{"建议用 `Quality.Signals.Confidence` 作为 band 输入，不使用 `QualityReport.Score`，避免多条 success evidence 改变 band。", "Quality.Signals.Confidence"},
 	}
 	for _, testCase := range cases {
 		candidates := Scan([]record.MessageRecord{msg("s1", "user", testCase.text)})
