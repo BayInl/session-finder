@@ -190,14 +190,14 @@ func TestSessionEndHookRunsExtraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(root, "invoked")
-	fake := filepath.Join(bin, "session-finder")
+	fake := filepath.Join(bin, "sfind")
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s' \"$*\" > \"$HOOK_MARKER\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("/bin/sh", script)
 	cmd.Env = append(os.Environ(),
 		"TMPDIR="+root,
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PATH="+bin+string(os.PathListSeparator)+"/usr/bin:/bin",
 		"HOOK_MARKER="+marker,
 	)
 	cmd.Stdin = strings.NewReader(`{"session_id":"ignored"}`)
@@ -235,7 +235,7 @@ func TestSessionEndHookRunsExtractionWithMalformedStaleOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(root, "invoked")
-	fake := filepath.Join(bin, "session-finder")
+	fake := filepath.Join(bin, "sfind")
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s' \"$*\" > \"$HOOK_MARKER\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestSessionEndHookRunsExtractionWithMalformedStaleOwner(t *testing.T) {
 	cmd := exec.Command("/bin/sh", script)
 	cmd.Env = append(os.Environ(),
 		"TMPDIR="+root,
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PATH="+bin+string(os.PathListSeparator)+"/usr/bin:/bin",
 		"HOOK_MARKER="+marker,
 	)
 	cmd.Stdin = strings.NewReader(`{"session_id":"ignored"}`)
@@ -300,7 +300,7 @@ func TestHookLockReclaimsStaleOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(root, "invoked")
-	fakeSessionFinder := filepath.Join(fakeBin, "session-finder")
+	fakeSessionFinder := filepath.Join(fakeBin, "sfind")
 	if err := os.WriteFile(fakeSessionFinder, []byte("#!/bin/sh\nprintf invoked > \"$HOOK_MARKER\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestHookLockReclaimsStaleOwner(t *testing.T) {
 	}
 
 	t.Setenv("TMPDIR", root)
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+"/usr/bin:/bin")
 	t.Setenv("HOOK_MARKER", marker)
 	if err := exec.Command("/bin/sh", "-c", hookLockBody).Run(); err != nil {
 		t.Fatalf("stale lock command failed: %v", err)
@@ -336,7 +336,7 @@ func TestHookLockKeepsLiveOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(root, "invoked")
-	fakeSessionFinder := filepath.Join(fakeBin, "session-finder")
+	fakeSessionFinder := filepath.Join(fakeBin, "sfind")
 	if err := os.WriteFile(fakeSessionFinder, []byte("#!/bin/sh\nprintf invoked > \"$HOOK_MARKER\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestHookLockKeepsLiveOwner(t *testing.T) {
 	}
 
 	t.Setenv("TMPDIR", root)
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+"/usr/bin:/bin")
 	t.Setenv("HOOK_MARKER", marker)
 	if err := exec.Command("/bin/sh", "-c", hookLockBody).Run(); err != nil {
 		t.Fatalf("live lock command failed: %v", err)

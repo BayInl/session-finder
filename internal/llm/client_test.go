@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,6 +80,16 @@ func TestRedactSupportsUnderscoreSecretsSlackAndJWT(t *testing.T) {
 	}
 }
 
+func TestRedactRequestRedactsSchemaStringsAndKeepsValidJSON(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","description":"send token=supersecret to /Users/alice/private","properties":{"value":{"type":"string"}}}`)
+	redacted := RedactRequest(CompletionRequest{Schema: schema})
+	if !json.Valid(redacted.Schema) {
+		t.Fatalf("redacted schema is invalid: %s", redacted.Schema)
+	}
+	if strings.Contains(string(redacted.Schema), "supersecret") || strings.Contains(string(redacted.Schema), "/Users/alice/private") {
+		t.Fatalf("schema leaked sensitive values: %s", redacted.Schema)
+	}
+}
 func TestOpenAICompatibleClientRedactsBeforeRequestAndValidatesSchema(t *testing.T) {
 	var requestBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -219,19 +230,16 @@ func jsonString(value string) string {
 	return string(data)
 }
 
-func TestNewFromEnvOfflineAndAutoPromote(t *testing.T) {
-	t.Setenv("SESSION_FINDER_LLM_PROVIDER", "")
-	t.Setenv("LLM_PROVIDER", "")
-	t.Setenv("SESSION_FINDER_LLM_BASE_URL", "")
-	t.Setenv("OPENAI_BASE_URL", "")
-	t.Setenv("LLM_BASE_URL", "")
-	t.Setenv("SESSION_FINDER_LLM_API_KEY", "")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("LLM_API_KEY", "")
-	t.Setenv("CLIRELAY_API_KEY", "")
-	t.Setenv("SESSION_FINDER_LLM_MODEL", "")
-	t.Setenv("OPENAI_MODEL", "")
-	t.Setenv("LLM_MODEL", "")
+func TestNewFromEnvRequiresSessionFinderTupleOrExplicitProvider(t *testing.T) {
+	clearLLMEnv(t)
+	var warnings strings.Builder
+	oldWriter := warningWriter
+	legacyEnvWarning = sync.Once{}
+	warningWriter = &warnings
+	t.Cleanup(func() {
+		legacyEnvWarning = sync.Once{}
+		warningWriter = oldWriter
+	})
 	client, err := NewFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -247,11 +255,57 @@ func TestNewFromEnvOfflineAndAutoPromote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if IsOffline(client) {
-		t.Fatal("complete OpenAI tuple should promote online")
+	if !IsOffline(client) {
+		t.Fatal("generic OpenAI tuple must not silently enable transcript upload")
 	}
 
-	t.Setenv("LLM_PROVIDER", "anthropic")
+	t.Setenv("SESSION_FINDER_LLM_PROVIDER", "openai")
+	client, err = NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsOffline(client) {
+		t.Fatal("explicit provider should permit legacy OpenAI tuple")
+	}
+	if _, err := NewFromEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(warnings.String(), "generic LLM environment variables"); got != 1 {
+		t.Fatalf("legacy warning count = %d: %q", got, warnings.String())
+	}
+
+	clearLLMEnv(t)
+	t.Setenv("SESSION_FINDER_LLM_BASE_URL", "https://example.test/v1")
+	t.Setenv("SESSION_FINDER_LLM_API_KEY", "sk-test")
+	t.Setenv("SESSION_FINDER_LLM_MODEL", "unit-model")
+	client, err = NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsOffline(client) {
+		t.Fatal("complete SESSION_FINDER_LLM tuple should promote online")
+	}
+
+	clearLLMEnv(t)
+	t.Setenv("SESSION_FINDER_LLM_PROVIDER", "openai")
+	t.Setenv("SESSION_FINDER_LLM_BASE_URL", "https://example.test/v1")
+	t.Setenv("SESSION_FINDER_LLM_API_KEY", "sk-test")
+	t.Setenv("SESSION_FINDER_LLM_MODEL", "unit-model")
+	t.Setenv("SESSION_FINDER_LLM_TIMEOUT", "7")
+	t.Setenv("SESSION_FINDER_LLM_MAX_REQUEST_BYTES", "1234")
+	t.Setenv("SESSION_FINDER_LLM_MAX_OUTPUT_TOKENS", "55")
+	t.Setenv("SESSION_FINDER_LLM_MAX_CALLS", "3")
+	t.Setenv("SESSION_FINDER_LLM_MAX_TOTAL_TOKENS", "4567")
+	client, err = NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := client.(*openAIClient)
+	if configured.timeout != 7*time.Second || configured.maxRequestBytes != 1234 || configured.maxOutputTokens != 55 || configured.maxCalls != 3 || configured.maxTotalTokens != 4567 {
+		t.Fatalf("environment budgets not applied: %+v", configured)
+	}
+
+	t.Setenv("SESSION_FINDER_LLM_PROVIDER", "anthropic")
 	_, err = NewFromEnv()
 	if !errors.Is(err, ErrInvalidProvider) {
 		t.Fatalf("invalid provider error = %v", err)
@@ -260,13 +314,26 @@ func TestNewFromEnvOfflineAndAutoPromote(t *testing.T) {
 		t.Fatalf("kind = %q", fault.KindOf(err))
 	}
 
-	t.Setenv("LLM_PROVIDER", "openai")
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("SESSION_FINDER_LLM_API_KEY", "")
-	t.Setenv("LLM_API_KEY", "")
+	clearLLMEnv(t)
+	t.Setenv("SESSION_FINDER_LLM_PROVIDER", "openai")
 	_, err = NewFromEnv()
 	if !errors.Is(err, ErrMissingAPIKey) {
 		t.Fatalf("missing key error = %v", err)
+	}
+}
+
+func clearLLMEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"SESSION_FINDER_LLM_PROVIDER", "LLM_PROVIDER",
+		"SESSION_FINDER_LLM_BASE_URL", "OPENAI_BASE_URL", "LLM_BASE_URL",
+		"SESSION_FINDER_LLM_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "CLIRELAY_API_KEY",
+		"SESSION_FINDER_LLM_MODEL", "OPENAI_MODEL", "LLM_MODEL",
+		"SESSION_FINDER_LLM_TIMEOUT", "SESSION_FINDER_LLM_MAX_REQUEST_BYTES",
+		"SESSION_FINDER_LLM_MAX_OUTPUT_TOKENS", "SESSION_FINDER_LLM_MAX_CALLS",
+		"SESSION_FINDER_LLM_MAX_TOTAL_TOKENS",
+	} {
+		t.Setenv(name, "")
 	}
 }
 
@@ -298,10 +365,144 @@ func TestIsOfflineNilAndOpenAI(t *testing.T) {
 	}
 }
 
+func TestOpenAIRejectsRemoteHTTPAndRedactsBaseURLError(t *testing.T) {
+	_, err := New(Config{Provider: ProviderOpenAI, BaseURL: "http://alice:secret@example.test/private?api_key=hidden", APIKey: "key"})
+	if !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("credential URL error = %v", err)
+	}
+	for _, secret := range []string{"alice", "secret", "private", "hidden"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("base URL error leaked %q: %v", secret, err)
+		}
+	}
+
+	_, err = New(Config{Provider: ProviderOpenAI, BaseURL: "http://example.test/private", APIKey: "key"})
+	if !errors.Is(err, ErrInsecureBaseURL) {
+		t.Fatalf("remote HTTP error = %v", err)
+	}
+	if strings.Contains(err.Error(), "private") {
+		t.Fatalf("insecure URL error leaked details: %v", err)
+	}
+}
+
+func TestOpenAIRefusesRedirectsWithAuthorization(t *testing.T) {
+	var redirectedHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirectedHits.Add(1)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: source.URL, APIKey: "key", MaxRetries: -1, HTTPClient: &http.Client{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Complete(context.Background(), CompletionRequest{})
+	var api *APIError
+	if !errors.As(err, &api) || api.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect error = %v", err)
+	}
+	if redirectedHits.Load() != 0 {
+		t.Fatalf("authorization-bearing redirect reached target %d times", redirectedHits.Load())
+	}
+}
+
+func TestOpenAIRequestLimitPreventsNetworkCall(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer server.Close()
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", MaxRequestBytes: 128})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Complete(context.Background(), CompletionRequest{Transcript: []Message{{Role: "user", Content: strings.Repeat("x", 512)}}})
+	if !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("request limit error = %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("oversize request made %d calls", hits.Load())
+	}
+}
+
+func TestOpenAITotalDeadlineIncludesRetrySleep(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", Timeout: 30 * time.Millisecond, MaxRetries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = client.Complete(context.Background(), CompletionRequest{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error = %v", err)
+	}
+	if time.Since(started) > 500*time.Millisecond {
+		t.Fatalf("deadline did not cancel retry sleep")
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("deadline allowed %d calls", hits.Load())
+	}
+}
+
+func TestOpenAITracksUsageAndEnforcesBudgets(t *testing.T) {
+	var requestBody map[string]any
+	var hits atomic.Int32
+	response := `{"choices":[{"message":{"content":"{\"intent_kind\":\"workflow\",\"confidence\":0.8,\"success_evidence\":[],\"one_off_risk\":0,\"secret_risk\":0,\"recommended_action\":\"draft\"}"}}],"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(response))
+	}))
+	defer server.Close()
+	client, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", MaxOutputTokens: 64, MaxCalls: 1, MaxTotalTokens: 10000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(context.Background(), CompletionRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if requestBody["max_tokens"] != float64(64) {
+		t.Fatalf("max_tokens = %#v", requestBody["max_tokens"])
+	}
+	usageClient, ok := client.(interface{ Usage() UsageStats })
+	if !ok {
+		t.Fatalf("client %T has no Usage method", client)
+	}
+	usage := usageClient.Usage()
+	if usage.Calls != 1 || usage.SuccessfulCalls != 1 || usage.InputTokens != 20 || usage.OutputTokens != 10 || usage.TotalTokens != 30 || usage.EstimatedCalls != 0 {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if _, err := client.Complete(context.Background(), CompletionRequest{}); !errors.Is(err, ErrCallBudgetExceeded) {
+		t.Fatalf("call budget error = %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("budget allowed %d calls", hits.Load())
+	}
+
+	tokenLimited, err := New(Config{Provider: ProviderOpenAI, BaseURL: server.URL, APIKey: "key", MaxOutputTokens: 64, MaxTotalTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tokenLimited.Complete(context.Background(), CompletionRequest{}); !errors.Is(err, ErrTokenBudgetExceeded) {
+		t.Fatalf("token budget error = %v", err)
+	}
+}
+
 func TestOpenAIRetriesThenSucceeds(t *testing.T) {
-	oldSleep := sleep
-	sleep = func(time.Duration) {}
-	defer func() { sleep = oldSleep }()
+	oldSleep := sleepContext
+	sleepContext = func(context.Context, time.Duration) error { return nil }
+	defer func() { sleepContext = oldSleep }()
 
 	var hits atomic.Int32
 	ok := `{"choices":[{"message":{"content":"{\"intent_kind\":\"workflow\",\"confidence\":0.8,\"success_evidence\":[\"acceptance\"],\"one_off_risk\":0.1,\"secret_risk\":0,\"recommended_action\":\"draft\"}"}}]}`
@@ -329,9 +530,9 @@ func TestOpenAIRetriesThenSucceeds(t *testing.T) {
 }
 
 func TestOpenAIDoesNotRetryClientErrors(t *testing.T) {
-	oldSleep := sleep
-	sleep = func(time.Duration) {}
-	defer func() { sleep = oldSleep }()
+	oldSleep := sleepContext
+	sleepContext = func(context.Context, time.Duration) error { return nil }
+	defer func() { sleepContext = oldSleep }()
 
 	var hits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -355,9 +556,9 @@ func TestOpenAIDoesNotRetryClientErrors(t *testing.T) {
 }
 
 func TestOpenAIFallsBackToJSONObject(t *testing.T) {
-	oldSleep := sleep
-	sleep = func(time.Duration) {}
-	defer func() { sleep = oldSleep }()
+	oldSleep := sleepContext
+	sleepContext = func(context.Context, time.Duration) error { return nil }
+	defer func() { sleepContext = oldSleep }()
 
 	var hits atomic.Int32
 	ok := `{"choices":[{"message":{"content":"{\"intent_kind\":\"workflow\",\"confidence\":0.8,\"success_evidence\":[\"acceptance\"],\"one_off_risk\":0.1,\"secret_risk\":0,\"recommended_action\":\"draft\"}"}}]}`
@@ -400,13 +601,18 @@ func TestDecodeSegmentsNormalizesTurns(t *testing.T) {
 	}
 }
 
-func TestAPIErrorKindAndRateLimit(t *testing.T) {
-	err := newAPIError(429, "429 Too Many Requests", `{"error":"rate"}`)
+func TestAPIErrorKindRateLimitAndRedaction(t *testing.T) {
+	err := newAPIError(429, "429 Too Many Requests", `{"error":"token=supersecret for alice@example.com at /Users/alice/private"}`)
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("unwrap = %v", err)
 	}
 	if fault.KindOf(err) != fault.KindNetwork {
 		t.Fatalf("kind = %q", fault.KindOf(err))
+	}
+	for _, secret := range []string{"supersecret", "alice@example.com", "/Users/alice/private"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("API error leaked %q: %v", secret, err)
+		}
 	}
 }
 
