@@ -9,7 +9,7 @@ before:
 builds:
   - id: session-finder
     main: ./cmd/session-finder
-    binary: session-finder
+    binary: sfind
     env:
       - CGO_ENABLED=0
     goos:
@@ -59,7 +59,7 @@ brews:
     description: Search local AI sessions from multiple tools
     license: MIT
     test: |
-      system "#{bin}/session-finder", "--help"
+      system "#{bin}/sfind", "--help"
 
 changelog:
   sort: asc
