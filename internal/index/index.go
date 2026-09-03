@@ -27,8 +27,8 @@ var (
 )
 
 const (
-	toolResultTextLimit = 12 * 1024
-	truncatedMarker     = "…[truncated]"
+	messageTextLimit = 12 * 1024
+	truncatedMarker  = "…[truncated]"
 )
 
 const ftsTriggersSQL = `
@@ -514,12 +514,10 @@ func sameFloat(left, right *float64) bool {
 }
 
 func indexMessageText(text string) string {
-	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
-	isToolResult := trimmed == "tool.result" || strings.HasPrefix(trimmed, "tool.result ")
-	if !isToolResult || len(text) <= toolResultTextLimit {
+	if len(text) <= messageTextLimit {
 		return text
 	}
-	limit := toolResultTextLimit - len(truncatedMarker)
+	limit := messageTextLimit - len(truncatedMarker)
 	for limit > 0 && !utf8.RuneStart(text[limit]) {
 		limit--
 	}
